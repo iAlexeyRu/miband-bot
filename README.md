@@ -1,15 +1,17 @@
 # miband-bot
 
-Single-user Xiaomi Fitness sync service and Telegram bot.
+Русский | [English](README_EN.md)
 
-The bot stores Xiaomi Fitness health data in SQLite and exposes a Telegram menu for recent steps, sleep, heart rate, SpO2, trends, manual sync and CSV export.
+Однопользовательский сервис синхронизации Xiaomi Fitness и Telegram-бот.
 
-## First Run
+Бот сохраняет данные здоровья из Xiaomi Fitness в SQLite и показывает в Telegram меню с шагами, сном, пульсом, SpO2, аналитикой, ручной синхронизацией и экспортом CSV.
 
-1. Create `secrets.env` from the variables below.
-2. Start Docker Compose.
-3. Open the bot in Telegram and send `/start`.
-4. The bot will show a Xiaomi login button. Confirm the login, then the bot saves `data/token_<telegram_user_id>.json`, runs the first sync and opens the main menu.
+## Первый запуск
+
+1. Создайте `secrets.env` с переменными ниже.
+2. Запустите Docker Compose.
+3. Откройте бота в Telegram и отправьте `/start`.
+4. Бот покажет кнопку входа в Xiaomi. Подтвердите вход, после этого бот сохранит `data/token_<telegram_user_id>.json`, запустит первую синхронизацию и откроет главное меню.
 
 ```env
 TELEGRAM_BOT_TOKEN=123456:telegram-token
@@ -26,9 +28,9 @@ docker compose up -d --build
 docker compose logs -f fitness-bot
 ```
 
-Both services share `./data`. Sync runs are guarded by a file lock in that directory, so manual sync from Telegram and the daemon do not write SQLite/token files at the same time.
+Оба сервиса используют общую папку `./data`. Синхронизация защищена файловым lock в этой папке, поэтому ручной sync из Telegram и daemon не пишут в SQLite/token одновременно.
 
-## Local Checks
+## Локальные проверки
 
 ```sh
 python3 -m venv .venv
@@ -42,15 +44,15 @@ python3 -m venv .venv
 
 ## Runtime
 
-Entrypoints kept for Docker compatibility:
+Entrypoints сохранены для совместимости с Docker:
 
 ```sh
 python -u miband_sync.py
 python -u fitness_bot.py
 ```
 
-Secrets live in `secrets.env` and `data/token_<telegram_user_id>.json`; do not commit them. Token files are written atomically with mode `0600`.
+Секреты лежат в `secrets.env` и `data/token_<telegram_user_id>.json`; не коммитьте их. Token-файлы записываются атомарно с правами `0600`.
 
-## License
+## Лицензия
 
-This project is licensed under GNU GPL v3.0. The vendored `mi-fitness-python` SDK is kept under its own GPL v3.0 license in `mi-fitness-python/LICENSE`.
+Проект распространяется под GNU GPL v3.0. Vendored SDK `mi-fitness-python` сохранён со своей GPL v3.0 лицензией в `mi-fitness-python/LICENSE`.
