@@ -17,6 +17,7 @@ from .config import ConfigError, Settings
 from .fds import download_and_decrypt_sleep_details, parse_all_day_sleep_bytes
 from .lock import LockUnavailable, exclusive_file_lock
 from .secure_files import save_auth_token, write_json_atomic, write_secret_json
+from .stdio import safe_print
 from .storage import init_health_db, sqlite_conn
 
 
@@ -34,7 +35,7 @@ class SyncResult:
 
 def log(message: str) -> None:
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] {message}", flush=True)
+    safe_print(f"[{now}] {message}", flush=True)
 
 
 def format_epoch(epoch: int | float | None) -> str | None:
@@ -364,24 +365,24 @@ def _write_status_file(status_path: Path, latest_steps, latest_heart_rate, lates
 async def daemon_main(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     if settings.sync_interval <= 0:
-        log("Running in one-shot mode.")
         result = await run_sync(settings=settings)
         return 0 if result.success else 1
 
-    log(f"Running in daemon mode. Sync interval: {settings.sync_interval} seconds.")
+    _waiting_logged = False
     while True:
         try:
             current_settings = Settings.from_env()
             if current_settings.telegram_allowed_user_id is None:
-                log("Waiting for allowed user ID to be registered via Telegram bot...")
+                if not _waiting_logged:
+                    log("Синхронизатор ожидает привязки аккаунта через Telegram (/start)...")
+                    _waiting_logged = True
                 await asyncio.sleep(5)
                 continue
 
+            _waiting_logged = False  # Reset so we log again if user unregisters
             await run_sync(settings=current_settings)
         except Exception as exc:
             log(f"Unhandled error in main loop: {exc}")
 
-        # Load settings again to catch any runtime changes in sync interval
         interval = Settings.from_env().sync_interval
-        log(f"Sleeping for {interval} seconds...")
         await asyncio.sleep(interval)

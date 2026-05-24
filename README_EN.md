@@ -2,186 +2,193 @@
 
 [Русский](README.md) | English
 
-A personal Telegram bot for Xiaomi Fitness / Mi Band data.
+A personal self-hosted Telegram bot for your Xiaomi Fitness / Mi Band data.
 
-It fetches steps, sleep, heart rate and SpO2 from Xiaomi Fitness, stores the history in a local SQLite database, and shows a practical Telegram menu. The goal is simple: your band data stays on your own server, while Telegram becomes a convenient place to check today's health snapshot, run a manual sync or export CSV files.
+Fetches steps, sleep, heart rate, and SpO2 from the Xiaomi Fitness cloud,
+stores them in a local SQLite database, and provides access to them directly from Telegram —
+without third-party services and without sharing your data with anyone.
 
-The project is designed for one owner. It is not a public multi-user bot and not a medical service.
+> **This project is designed for a single owner.**
+> This is not a public bot or a medical service.
 
-## What It Does
+## Features
 
-- Shows recent steps, sleep, heart rate and SpO2 in Telegram.
-- Runs manual sync from a Telegram button.
-- Syncs data automatically on a schedule.
-- Stores history in SQLite under `data/`.
-- Exports accumulated tables as a ZIP with CSV files.
-- Runs with Docker Compose.
-- Writes the Xiaomi token atomically with mode `0600`.
+- View recent steps, sleep, heart rate, and SpO2 in Telegram.
+- Manual and scheduled automatic synchronization.
+- History storage in SQLite (`data/`).
+- Export of all tables to a ZIP archive with CSV files directly into the chat.
+- Deployment via Docker Compose.
+- Atomic writing of the Xiaomi token with `0600` permissions.
+- Smart auto-binding to the first user (whitelist).
 
-## Who It Is For
-
-This project is useful if you:
-
-- use Xiaomi Fitness / Mi Band;
-- want to see your own data in Telegram;
-- are comfortable running a small self-hosted service;
-- understand that unofficial APIs can break when Xiaomi changes something.
-
-It is not a good fit if you need a multi-user SaaS, medical-grade accuracy, guaranteed compatibility with every band, or an official Xiaomi API.
-
-## Reverse Engineering Notice
-
-`miband-bot` is an unofficial project. It is not affiliated with Xiaomi, Zepp, Huami, Telegram or their partners.
-
-Xiaomi Fitness access is based on reverse engineering of unofficial APIs. This means:
-
-- Xiaomi can change the API without notice;
-- login or sync can temporarily stop working;
-- use the project only with your own accounts and your own data;
-- follow applicable laws and service terms in your jurisdiction;
-- wearable data is not a medical diagnosis.
-
-## How It Works
+## How it works
 
 ```text
-Mi Band -> Xiaomi Fitness cloud -> miband-bot -> SQLite -> Telegram menu / CSV export
+Mi Band → Xiaomi Fitness cloud → miband-bot → SQLite → Telegram / CSV
 ```
 
-Docker Compose starts two processes:
+Docker Compose runs two processes:
 
-- `tracker` - periodically syncs data from Xiaomi Fitness;
-- `fitness-bot` - responds in Telegram, shows the menu, starts manual sync and exports data.
+- `tracker` — periodically synchronizes data from Xiaomi Fitness;
+- `fitness-bot` — serves the Telegram menu, handles manual sync, and performs exports.
 
-Both processes share `./data`. Writes are protected by a file lock, so background sync and manual sync do not write SQLite/token files at the same time.
+Both processes work with the same `./data` folder. Concurrent write access
+is prevented by a file-based lock.
 
 ## Requirements
 
-- A server or home machine with Docker and Docker Compose.
-- A Telegram bot token from [@BotFather](https://t.me/BotFather).
-- Your Telegram user id.
+- Docker and Docker Compose (or installed Python 3.10+).
+- Telegram bot token from [@BotFather](https://t.me/BotFather).
 - A Xiaomi account with Xiaomi Fitness data.
 
 ## Quick Start
 
-1. Copy the secrets template:
+### Method 1: Seamless One-Click Installation (Recommended)
 
-```sh
-cp secrets.env.example secrets.env
-```
+If you don't have the project files on your machine yet, you can automatically download and set everything up using a single command in your terminal:
 
-2. Fill at least these variables:
+- **macOS / Linux:**
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/iAlexeyRu/miband-bot/main/install.sh | bash
+  ```
+- **Windows (PowerShell):**
+  ```powershell
+  powershell -c "irm https://raw.githubusercontent.com/iAlexeyRu/miband-bot/main/install.ps1 | iex"
+  ```
 
-```env
-TELEGRAM_BOT_TOKEN=123456:replace-me
-TELEGRAM_ALLOWED_USER_ID=123456789
-```
+The installer will automatically create a `miband-bot` directory, download and extract the project files, verify dependencies, and launch the interactive setup!
+Running the same PowerShell command again on an already configured install will update the files and start the bot without asking for the Telegram token again.
 
-3. Start the service:
+---
 
-```sh
-docker compose up -d --build
-docker compose logs -f fitness-bot
-```
+### Method 2: Launch from Downloaded Directory
 
-4. Open your Telegram bot and send `/start`.
+If you have already cloned the repository via `git clone` or downloaded the ZIP archive manually:
 
-5. The bot will show a Xiaomi login button. Confirm login through the link/QR flow. After that the bot saves `data/token_<telegram_user_id>.json`, runs the first sync and opens the main menu.
+- **macOS / Linux:**
+  ```sh
+  ./setup.sh
+  ```
+- **Windows:**
+  Double-click the `setup.bat` file or run it in the console:
+  ```cmd
+  setup.bat
+  ```
 
-## Configuration
+The script will automatically check your environment, guide you step-by-step to get your Telegram bot token, create the `secrets.env` configuration, set up the Python virtual environment (if you choose to run without Docker), and let you launch the bot with a single key press!
+After setup, you can start the bot again with `run_local.bat` from the `miband-bot` folder.
 
-Main variables live in `secrets.env`:
+---
 
-```env
-TELEGRAM_BOT_TOKEN=123456:replace-me
-TELEGRAM_ALLOWED_USER_ID=123456789
-SYNC_INTERVAL=900
-QUERY_DURATION=2
-ENABLE_FDS_SLEEP_DETAILS=true
-```
+### Method 3: Fully Manual Setup:
 
-- `TELEGRAM_BOT_TOKEN` - your Telegram bot token.
-- `TELEGRAM_ALLOWED_USER_ID` - the single Telegram user id allowed to access the bot.
-- `SYNC_INTERVAL` - background sync interval in seconds. `900` = 15 minutes.
-- `QUERY_DURATION` - how many recent days to query on each sync.
-- `ENABLE_FDS_SLEEP_DETAILS` - whether to try fetching detailed FDS sleep data.
+1. Copy the configuration template:
+   ```sh
+   cp secrets.env.example secrets.env
+   ```
+2. Specify your `TELEGRAM_BOT_TOKEN` in the `secrets.env` file. **Leave the `TELEGRAM_ALLOWED_USER_ID` variable blank** — the bot will automatically bind to you upon the first start.
+3. Start the Docker containers:
+   ```sh
+   docker compose up -d --build
+   ```
+4. Open your created bot in Telegram and send the `/start` command — the bot will recognize your account, bind it as the sole owner, and begin synchronization!
 
-Database and status paths are already set in `compose.yaml`. If you run without Docker, see `secrets.env.example`.
+## Settings
 
-## Where Data Lives
+All variables are in `secrets.env`:
 
-Runtime files are created under `./data`:
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | — | Telegram bot token |
+| `TELEGRAM_ALLOWED_USER_ID` | — | Allowed user ID (leave empty for auto-binding) |
+| `SYNC_INTERVAL` | `900` | Background sync interval, in seconds |
+| `QUERY_DURATION` | `2` | Fetch depth during sync, in days |
+| `ENABLE_FDS_SLEEP_DETAILS` | `true` | Download detailed FDS night sleep data |
 
-- `token_<telegram_user_id>.json` - Xiaomi auth token, secret file;
-- `miband_<telegram_user_id>.db` - SQLite database with health data;
-- `status_<telegram_user_id>.json` - latest sync status;
-- `fitness_bot_state.db` - Telegram menu state;
-- `sync_<telegram_user_id>.lock` - sync lock file.
+Paths to the database and status files are defined in `compose.yaml`. For running without Docker, refer to `secrets.env.example`.
 
-Do not commit `secrets.env`, `data/`, `*.db`, `token*.json` or `status*.json`. These files are already listed in `.gitignore`.
+## Data Files
 
-## Bot Commands
+Runtime files are created in `./data`:
 
-- `/start` - open the menu or start Xiaomi login.
-- `/sync` - run manual sync.
-- `/status` - show local database status.
+| File | Content |
+| --- | --- |
+| `token_<id>.json` | Xiaomi auth token (**secret**) |
+| `miband_<id>.db` | SQLite database with health data |
+| `status_<id>.json` | Last sync status |
+| `allowed_user.id` | ID of the bound owner |
+| `fitness_bot_state.db` | Telegram menu internal state |
+| `sync_<id>.lock` | Sync lock file |
 
-Most actions are done with buttons in the Telegram menu.
+`secrets.env`, `data/`, `*.db`, `token*.json`, and `status*.json`
+are added to `.gitignore` — do not commit them.
 
-## CSV Export
+## Commands
 
-The menu includes data export. The bot builds a ZIP with CSV tables and sends it through Telegram.
-
-Remember: the ZIP contains health data and travels through Telegram infrastructure. Do not send it to shared chats or store it where other people can access it.
+| Command | Action |
+| --- | --- |
+| `/start` | Open menu or start Xiaomi login flow |
+| `/sync` | Start manual synchronization |
+| `/status` | Show local database status |
 
 ## Local Development
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt -e mi-fitness-python
-.venv/bin/python -m py_compile fitness_bot.py miband_sync.py $(find miband_tracker -name '*.py' | sort)
+.venv/bin/python -m py_compile fitness_bot.py miband_sync.py \
+    $(find miband_tracker -name '*.py' | sort)
 .venv/bin/python -m pytest
 .venv/bin/python -m pytest mi-fitness-python/tests/unit
 .venv/bin/ruff check .
 .venv/bin/python -m pip check
 ```
 
-Entrypoints are kept for Docker and local compatibility:
+Entry points:
 
 ```sh
-python -u miband_sync.py
-python -u fitness_bot.py
-```
-
-If installed as a Python package, console scripts are available:
-
-```sh
-miband-sync
-miband-fitness-bot
+python -u miband_sync.py      # or: miband-sync
+python -u fitness_bot.py      # or: miband-fitness-bot
 ```
 
 ## Troubleshooting
 
-**The bot does not respond.**
-Check `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID` and logs:
+**The bot does not respond** — check `TELEGRAM_BOT_TOKEN`, check the logs, and make sure you were the first to send `/start` to the bot to bind it. If you need to reset the bound owner, simply delete the file `data/allowed_user.id` and send `/start` again.
 
 ```sh
 docker compose logs -f fitness-bot
 ```
 
-**Sync says token is missing.**
-Open the bot in Telegram, send `/start` and complete the Xiaomi login flow.
+**Token not found** — send `/start` and complete the Xiaomi login flow.
 
-**The token expired.**
-Run Xiaomi login again from the menu. You can remove the old token from `data/`.
+**Token expired** — start a re-login from the menu; the old file
+can be deleted from `data/`.
 
-**Some data is missing or there is no SpO2/sleep detail.**
-Check that Xiaomi Fitness itself shows that data. Some data depends on the band model, sharing settings and unofficial API availability.
+**No SpO2 or sleep details** — make sure this data is visible
+in the Xiaomi Fitness app itself. Availability depends on the band model
+and data sharing settings.
 
-**Everything broke after a Xiaomi update.**
-That is an expected risk for a reverse-engineering project. Check issues/README and logs, then update the code or temporarily disable the affected feature.
+**Everything broke after a Xiaomi update** — this is an expected risk
+when working with unofficial APIs. Check issues and logs, then
+update the code or temporarily disable the problematic module.
 
-## License And Vendored SDK
+## Important: Reverse Engineering and Limitations
 
-This project is licensed under GNU GPL v3.0 or later. The full license text is in [LICENSE](LICENSE).
+`miband-bot` is an unofficial project, not affiliated with Xiaomi, Zepp,
+Huami, or Telegram.
 
-The `mi-fitness-python` SDK is kept in this repository as a vendored source copy and remains under its own GNU GPL v3.0 license: [mi-fitness-python/LICENSE](mi-fitness-python/LICENSE). Origin and update policy are documented in [VENDORED.md](VENDORED.md).
+Data access is implemented via reverse engineering of closed APIs,
+therefore:
+
+- Xiaomi may change the API without warning;
+- authorization or synchronization may temporarily stop working;
+- use this project only with your own accounts and data;
+- comply with applicable laws and services' terms of use;
+- wristband data is not a medical opinion.
+
+## License
+
+The project is distributed under the [GNU GPL v3.0 or later](LICENSE).
+
+SDK `mi-fitness-python` is included as a vendored source copy under
+[GNU GPL v3.0](mi-fitness-python/LICENSE). Details are in [VENDORED.md](VENDORED.md).

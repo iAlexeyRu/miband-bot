@@ -8,6 +8,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _load_local_env(filename: str = "secrets.env") -> None:
+    """Load KEY=VALUE pairs from a local .env file into os.environ.
+
+    Only sets variables that are NOT already present in the environment
+    (explicit env always wins). Skips blank lines and comments (#).
+    """
+    env_file = Path(filename)
+    if not env_file.exists():
+        return
+    try:
+        for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value.strip()
+    except Exception:
+        pass  # Never crash on env-file read failure
+
+
 class ConfigError(ValueError):
     """Invalid runtime configuration."""
 
@@ -44,7 +66,18 @@ class Settings:
 
     @classmethod
     def from_env(cls, *, require_bot: bool = False) -> Settings:
-        data_dir = Path(os.environ.get("DATA_DIR", "/opt/miband-tracker/data"))
+        # Load local secrets.env (if present) before reading env vars.
+        # This makes Python the single source of truth on all platforms.
+        _load_local_env()
+        # Auto-detect local vs Docker mode: if DATA_DIR is not set, use ./data
+        # when running locally (secrets.env present or ./data already exists),
+        # otherwise fall back to the Docker default /opt/miband-tracker/data.
+        _default_data = (
+            "./data"
+            if (Path("secrets.env").exists() or Path("data").is_dir())
+            else "/opt/miband-tracker/data"
+        )
+        data_dir = Path(os.environ.get("DATA_DIR", _default_data))
         allowed_user_id = parse_single_user_id(
             os.environ.get("TELEGRAM_ALLOWED_USER_ID", ""), required=False
         )

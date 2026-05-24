@@ -20,3 +20,7 @@ status*.json
 *.zip
 *.tar
 *.tar.gz
+
+# Generated launchers
+run_local.sh
+run_local.bat

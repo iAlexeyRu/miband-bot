@@ -42,7 +42,7 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
                 lock_file.seek(0)
                 # Блокируем первые 64 байта файла без ожидания (non-blocking)
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 64)
-            except (OSError, IOError) as exc:
+            except OSError as exc:
                 raise LockUnavailable(f"Lock is already held: {path}") from exc
         else:
             # Резервный вариант, если блокировки недоступны на платформе

@@ -35,16 +35,25 @@ from miband_tracker.secure_files import save_auth_token
 from miband_tracker.sync import run_sync
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging — console shows only WARNING+ so users don't see debug spam.
+# The mi-fitness vendored library uses loguru with Chinese debug messages;
+# we suppress those to ERROR as well.
 # ---------------------------------------------------------------------------
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 logger = logging.getLogger("fitness-bot")
+
+try:
+    from loguru import logger as _loguru_logger
+    _loguru_logger.remove()  # Remove loguru's default stderr handler
+    _loguru_logger.add(sys.stderr, level="ERROR", format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}")
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Config
@@ -1499,10 +1508,11 @@ def main() -> None:
     ALLOWED_USER_ID = SETTINGS.telegram_allowed_user_id
     if ALLOWED_USER_ID is not None:
         DB_PATH = str(SETTINGS.user_db_path(ALLOWED_USER_ID))
-        logger.info("Стартую fitness-bot для пользователя: %s", ALLOWED_USER_ID)
+        print(f"Запуск бота для пользователя ID {ALLOWED_USER_ID}...")
     else:
         DB_PATH = str(SETTINGS.db_path)
-        logger.info("Стартую fitness-bot в режиме ожидания привязки владельца (первое входящее сообщение привяжет бота)...")
+        print("Бот запущен. Отправьте /start в Telegram чтобы привязать аккаунт.")
+
 
     init_state_db()
     app = Application.builder().token(BOT_TOKEN).build()

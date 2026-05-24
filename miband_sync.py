@@ -7,8 +7,12 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from miband_tracker.config import ConfigError, Settings
-from miband_tracker.sync import daemon_main, run_sync
+from miband_tracker.stdio import configure_utf8_stdio
+
+configure_utf8_stdio()
+
+from miband_tracker.config import ConfigError, Settings  # noqa: E402
+from miband_tracker.sync import daemon_main, run_sync  # noqa: E402
 
 __all__ = ["run_sync"]
 
