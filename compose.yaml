@@ -1,0 +1,32 @@
+services:
+  tracker:
+    container_name: miband-tracker
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./data:/opt/miband-tracker/data
+    env_file:
+      - secrets.env
+    environment:
+      - DB_PATH=/opt/miband-tracker/data/miband.db
+      - STATUS_PATH=/opt/miband-tracker/data/status.json
+      - BOT_STATE_DB_PATH=/opt/miband-tracker/data/fitness_bot_state.db
+      - DATA_DIR=/opt/miband-tracker/data
+      - SYNC_INTERVAL=900
+      - QUERY_DURATION=2
+
+
+  fitness-bot:
+    container_name: miband-fitness-bot
+    build: .
+    restart: unless-stopped
+    command: ["python", "-u", "fitness_bot.py"]
+    volumes:
+      - ./data:/opt/miband-tracker/data
+    env_file:
+      - secrets.env
+    environment:
+      - DB_PATH=/opt/miband-tracker/data/miband.db
+      - STATUS_PATH=/opt/miband-tracker/data/status.json
+      - BOT_STATE_DB_PATH=/opt/miband-tracker/data/fitness_bot_state.db
+      - DATA_DIR=/opt/miband-tracker/data
