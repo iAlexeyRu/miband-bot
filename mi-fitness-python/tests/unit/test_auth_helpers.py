@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from loguru import logger
 
 from mi_fitness.auth import _helpers as auth_helpers
 from mi_fitness.auth import sts as auth_sts
@@ -20,6 +21,13 @@ def _response(
 ) -> httpx.Response:
     request = httpx.Request("GET", "https://example.com/test")
     return httpx.Response(200, text=text, headers=headers, request=request)
+
+
+class _Cookie:
+    def __init__(self, name: str, domain: str, value: str):
+        self.name = name
+        self.domain = domain
+        self.value = value
 
 
 def test_parse_mi_response_supports_start_prefix() -> None:
@@ -154,6 +162,26 @@ async def test_sts_exchange_uses_device_id_and_accepts_ok_response(
     params = http.get.await_args.kwargs["params"]
     assert params["d"] == "an_device"
     assert params["p_ts"] == "1234"
+
+
+@pytest.mark.asyncio
+async def test_sts_exchange_does_not_log_cookie_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    http = MagicMock()
+    http.get = AsyncMock(return_value=_response(text="ok"))
+    http.cookies.jar = [_Cookie("serviceToken", "hlth.io.mi.com", "secret-service-token")]
+    token = AuthToken(device_id="an_device", pass_token="secret-pass-token")
+    messages: list[str] = []
+    sink_id = logger.add(lambda message: messages.append(str(message)), level="DEBUG", format="{message}")
+
+    try:
+        await auth_sts.sts_exchange(http, token)
+    finally:
+        logger.remove(sink_id)
+
+    logs = "\n".join(messages)
+    assert "secret-service-token" not in logs
+    assert "secret-pass-token" not in logs
+    assert "serviceToken успешно сохранен" in logs
 
 
 @pytest.mark.asyncio

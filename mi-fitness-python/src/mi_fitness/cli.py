@@ -48,9 +48,9 @@ async def _qr_login() -> None:
         print("\n📱 请用小米账号 APP 扫描二维码登录\n")
         if login_url:
             _print_qr_to_terminal(login_url)
-        print(f"\n   二维码图片: {qr_image_url}")
-        if login_url:
-            print(f"   浏览器打开: {login_url}")
+        elif qr_image_url:
+            _print_qr_to_terminal(qr_image_url)
+        print("\n   登录二维码已显示在终端；URL 不会打印。")
         print("\n⏳ 等待扫码...\n")
 
     async with XiaomiAuth() as auth:

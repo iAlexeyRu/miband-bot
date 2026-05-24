@@ -116,11 +116,7 @@ async def extract_credentials(
         service_token = await extract_service_token(http, location)
         token.service_token = service_token
 
-    logger.debug(
-        "凭证提取完成, ssecurity={}, user_id={}",
-        token.ssecurity[:8] + "...",
-        token.user_id,
-    )
+    logger.debug("凭证提取完成, user_id={}", token.user_id)
 
 
 async def async_sleep(seconds: float) -> None:

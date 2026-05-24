@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import time
 import os
+import time
 
 from loguru import logger
 
@@ -46,10 +46,6 @@ async def sts_exchange(http: RetryAsyncClient, token: AuthToken) -> None:
         resp = await http.get(STS_HEALTH_URL, params=params, cookies=cookies)
         if resp.text.strip() == "ok":
             logger.debug("STS 交换成功")
-            # Extract STS serviceToken from cookies and save it to AuthToken
-            logger.debug("Куки в клиенте во время STS:")
-            for cookie in http.cookies.jar:
-                logger.debug(f"  Cookie: {cookie.name}, Domain: {cookie.domain}, Value: {cookie.value[:15]}...")
             sts_token = None
             for cookie in http.cookies.jar:
                 if cookie.name == "serviceToken" and "hlth.io.mi.com" in (cookie.domain or ""):
@@ -57,10 +53,10 @@ async def sts_exchange(http: RetryAsyncClient, token: AuthToken) -> None:
                     break
             if not sts_token:
                 sts_token = http.cookies.get("serviceToken")
-            
+
             if sts_token:
                 token.service_token = sts_token
-                logger.debug("STS serviceToken успешно сохранен в AuthToken: {}", sts_token[:15] + "...")
+                logger.debug("STS serviceToken успешно сохранен в AuthToken")
         else:
             logger.warning("STS 交换响应: {}", resp.text[:100])
     except Exception as e:

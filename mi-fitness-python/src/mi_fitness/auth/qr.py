@@ -67,9 +67,9 @@ async def login_qr(
         await qr_callback(qr_image_url, login_url)
     else:
         logger.info("请使用小米账号 APP 扫描二维码登录")
-        logger.info("二维码图片: {}", qr_image_url)
+        logger.info("二维码图片已获取")
         if login_url:
-            logger.info("或在浏览器打开: {}", login_url)
+            logger.info("浏览器登录链接已获取")
 
     # Step 2: 长轮询等待扫码
     effective_timeout = min(float(qr_timeout), max_wait)

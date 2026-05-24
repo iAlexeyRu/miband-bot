@@ -45,7 +45,7 @@ class _FakeAuth:
 
 
 @pytest.mark.asyncio
-async def test_qr_login_saves_token(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_qr_login_saves_token(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     _FakeAuth.instances.clear()
     tmp_dir = _workspace_tmp_dir()
     monkeypatch.setattr(cli, "XiaomiAuth", _FakeAuth)
@@ -55,6 +55,9 @@ async def test_qr_login_saves_token(monkeypatch: pytest.MonkeyPatch) -> None:
         auth = _FakeAuth.instances[-1]
         assert auth.login_calls == [("qr",)]
         assert auth.saved_path == tmp_dir / "token.json"
+        stdout = capsys.readouterr().out
+        assert "https://example.com/login" not in stdout
+        assert "https://example.com/qr.png" not in stdout
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
