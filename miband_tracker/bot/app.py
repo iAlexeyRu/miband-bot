@@ -64,7 +64,20 @@ STEP_GOAL = 10_000  # можно вынести в env при желании
 # Auth helpers
 # ---------------------------------------------------------------------------
 def is_allowed(update: Update) -> bool:
+    global ALLOWED_USER_ID
     uid = update.effective_user.id if update.effective_user else None
+    if uid is None:
+        return False
+    if ALLOWED_USER_ID is None:
+        ALLOWED_USER_ID = uid
+        try:
+            allowed_user_file = SETTINGS.data_dir / "allowed_user.id"
+            SETTINGS.data_dir.mkdir(parents=True, exist_ok=True)
+            allowed_user_file.write_text(str(uid), encoding="utf-8")
+            logger.info("🎉 Бот успешно привязан к первому пользователю (ID: %s)!", uid)
+        except Exception as e:
+            logger.error("Не удалось сохранить ID владельца в файл: %s", e)
+        return True
     return uid == ALLOWED_USER_ID
 
 
@@ -1483,11 +1496,15 @@ def main() -> None:
         logger.error("%s", exc)
         sys.exit(1)
     BOT_TOKEN = SETTINGS.telegram_bot_token
-    ALLOWED_USER_ID = SETTINGS.require_user_id()
-    DB_PATH = str(SETTINGS.user_db_path(ALLOWED_USER_ID))
+    ALLOWED_USER_ID = SETTINGS.telegram_allowed_user_id
+    if ALLOWED_USER_ID is not None:
+        DB_PATH = str(SETTINGS.user_db_path(ALLOWED_USER_ID))
+        logger.info("Стартую fitness-bot для пользователя: %s", ALLOWED_USER_ID)
+    else:
+        DB_PATH = str(SETTINGS.db_path)
+        logger.info("Стартую fitness-bot в режиме ожидания привязки владельца (первое входящее сообщение привяжет бота)...")
 
     init_state_db()
-    logger.info("Стартую fitness-bot для пользователя: %s", ALLOWED_USER_ID)
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))

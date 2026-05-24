@@ -371,8 +371,17 @@ async def daemon_main(settings: Settings | None = None) -> int:
     log(f"Running in daemon mode. Sync interval: {settings.sync_interval} seconds.")
     while True:
         try:
-            await run_sync(settings=settings)
+            current_settings = Settings.from_env()
+            if current_settings.telegram_allowed_user_id is None:
+                log("Waiting for allowed user ID to be registered via Telegram bot...")
+                await asyncio.sleep(5)
+                continue
+
+            await run_sync(settings=current_settings)
         except Exception as exc:
             log(f"Unhandled error in main loop: {exc}")
-        log(f"Sleeping for {settings.sync_interval} seconds...")
-        await asyncio.sleep(settings.sync_interval)
+
+        # Load settings again to catch any runtime changes in sync interval
+        interval = Settings.from_env().sync_interval
+        log(f"Sleeping for {interval} seconds...")
+        await asyncio.sleep(interval)

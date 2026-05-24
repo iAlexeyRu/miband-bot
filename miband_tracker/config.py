@@ -46,8 +46,16 @@ class Settings:
     def from_env(cls, *, require_bot: bool = False) -> Settings:
         data_dir = Path(os.environ.get("DATA_DIR", "/opt/miband-tracker/data"))
         allowed_user_id = parse_single_user_id(
-            os.environ.get("TELEGRAM_ALLOWED_USER_ID", ""), required=require_bot
+            os.environ.get("TELEGRAM_ALLOWED_USER_ID", ""), required=False
         )
+        # Если ID не задан в env, пробуем загрузить из файла allowed_user.id
+        allowed_user_file = data_dir / "allowed_user.id"
+        if allowed_user_id is None and allowed_user_file.exists():
+            try:
+                allowed_user_id = int(allowed_user_file.read_text(encoding="utf-8").strip())
+            except Exception:
+                pass
+
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         if require_bot and not bot_token:
             raise ConfigError("TELEGRAM_BOT_TOKEN не задан")
