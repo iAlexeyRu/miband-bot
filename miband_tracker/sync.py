@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Alexey
+
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +28,7 @@ class SyncResult:
     error: str | None = None
 
     @classmethod
-    def failed(cls, message: str, *, user_id: int | None = None) -> "SyncResult":
+    def failed(cls, message: str, *, user_id: int | None = None) -> SyncResult:
         return cls(False, user_id=user_id, error=message)
 
 

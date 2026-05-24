@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Alexey
+
 import struct
 
 from miband_tracker.fds import parse_all_day_sleep_bytes

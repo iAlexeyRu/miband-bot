@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Alexey
+
 from __future__ import annotations
 
 import os
@@ -40,7 +43,7 @@ class Settings:
     enable_fds_sleep_details: bool
 
     @classmethod
-    def from_env(cls, *, require_bot: bool = False) -> "Settings":
+    def from_env(cls, *, require_bot: bool = False) -> Settings:
         data_dir = Path(os.environ.get("DATA_DIR", "/opt/miband-tracker/data"))
         allowed_user_id = parse_single_user_id(
             os.environ.get("TELEGRAM_ALLOWED_USER_ID", ""), required=require_bot

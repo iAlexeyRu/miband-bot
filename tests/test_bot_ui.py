@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Alexey
+
 import asyncio
 import json
 from pathlib import Path
@@ -27,7 +30,7 @@ def test_service_menu_does_not_expose_invites_or_second_user() -> None:
         for row in keyboard.inline_keyboard
         for button in row
     ]
-    rendered = "\n".join(labels + [bot_app.more_text()])
+    rendered = "\n".join([*labels, bot_app.more_text()])
 
     assert "Принять приглашения" not in rendered
     assert "Приглашения" not in rendered

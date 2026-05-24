@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Alexey
+
 from __future__ import annotations
 
 import json
@@ -5,7 +8,6 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
-
 
 SECRET_FILE_MODE = 0o600
 

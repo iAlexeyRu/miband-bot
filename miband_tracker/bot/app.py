@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-from __future__ import annotations
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Alexey
 
-from functools import wraps
+from __future__ import annotations
 
 import asyncio
 import html
@@ -10,11 +11,15 @@ import logging
 import sqlite3
 import sys
 import time
-from datetime import date, datetime, time as dt_time, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dt_time
+from functools import wraps
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from mi_fitness.auth import XiaomiAuth
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram.error import RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -23,9 +28,6 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from telegram.error import RetryAfter, TelegramError
-
-from mi_fitness.auth import XiaomiAuth
 
 from miband_tracker import storage
 from miband_tracker.config import ConfigError, Settings
