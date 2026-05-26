@@ -40,7 +40,16 @@ def _settings(tmp_path: Path) -> Settings:
     )
 
 
-def test_service_menu_does_not_expose_invites_or_second_user() -> None:
+def test_service_menu_does_not_expose_invites_or_second_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+
+    monkeypatch.setattr(bot_app, "SETTINGS", settings)
+    monkeypatch.setattr(bot_app, "ALLOWED_USER_ID", 123)
+    monkeypatch.setattr(bot_app, "DB_PATH", str(settings.canonical_user_db_path()))
+
     keyboard = bot_app.more_keyboard()
     labels = [
         button.text
@@ -216,7 +225,13 @@ def test_sleep_text_has_no_fds_hint_or_calendar_button(tmp_path: Path, monkeypat
     assert "Календарь" not in keyboard_labels
 
 
-def test_trends_screen_labels_and_keyboard() -> None:
+def test_trends_screen_labels_and_keyboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(tmp_path)
+
+    monkeypatch.setattr(bot_app, "SETTINGS", settings)
+    monkeypatch.setattr(bot_app, "ALLOWED_USER_ID", 123)
+    monkeypatch.setattr(bot_app, "DB_PATH", str(settings.canonical_user_db_path()))
+
     rendered = bot_app.period_text(3650)
     keyboard = bot_app.trends_keyboard(3650)
     labels = [
