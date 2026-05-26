@@ -65,6 +65,7 @@ target-version = "py311"
 extend-exclude = [
     ".venv",
     "data",
+    "scratch",
     "mi-fitness-python",
 ]
 

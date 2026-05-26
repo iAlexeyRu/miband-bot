@@ -143,6 +143,10 @@ async def run_sync_for_user(
         "sleep_stages": 0,
         "heart_rate": 0,
         "blood_oxygen": 0,
+        "stress": 0,
+        "calories_daily": 0,
+        "weight": 0,
+        "workouts": 0,
     }
     log(
         f"Starting sync. Target UID: {relative_uid}. Query duration: {settings.query_duration} days. "
@@ -193,8 +197,8 @@ async def run_sync_for_user(
                     start_time = 0
                     end_time = 0
                     if sleep.segment_details:
-                        start_time = sleep.segment_details[0].bedtime
-                        end_time = sleep.segment_details[-1].wake_up_time
+                        start_time = min(seg.bedtime for seg in sleep.segment_details)
+                        end_time = max(seg.wake_up_time for seg in sleep.segment_details)
                         for segment in sleep.segment_details:
                             cursor.execute(
                                 """
@@ -272,6 +276,34 @@ async def run_sync_for_user(
                             counters["blood_oxygen"] += cursor.rowcount > 0
                 except Exception as exc:
                     log(f"Failed to fetch blood oxygen: {exc}")
+
+                await _sync_aggregated_metric(
+                    client, cursor, counters, relative_uid, settings,
+                    "heart_rate", "heart_rate", "bpm",
+                    "INSERT OR IGNORE INTO heart_rate (timestamp, value) VALUES (?, ?)",
+                    json_key="bpm",
+                )
+                await _sync_aggregated_metric(
+                    client, cursor, counters, relative_uid, settings,
+                    "spo2", "blood_oxygen", "spo2",
+                    "INSERT OR IGNORE INTO blood_oxygen (timestamp, spo2, type) VALUES (?, ?, 'point')",
+                    json_key="spo2",
+                )
+                await _sync_aggregated_metric(
+                    client, cursor, counters, relative_uid, settings,
+                    "stress", "stress", "stress",
+                    "INSERT OR IGNORE INTO stress (timestamp, value) VALUES (?, ?)",
+                    json_key="stress",
+                )
+                await _sync_calories_daily(
+                    client, cursor, counters, relative_uid, settings,
+                )
+                await _sync_weight(
+                    client, cursor, counters, relative_uid, settings,
+                )
+                await _sync_workouts(
+                    client, cursor, counters, relative_uid,
+                )
 
                 conn.commit()
     except TokenExpiredError:
@@ -360,6 +392,206 @@ def _write_status_file(status_path: Path, latest_steps, latest_heart_rate, lates
         }
     write_json_atomic(status_path, status_data)
     log(f"Status file written to {status_path}")
+
+
+async def _sync_aggregated_metric(
+    client,
+    cursor,
+    counters: dict,
+    relative_uid: int,
+    settings,
+    api_key: str,
+    table: str,
+    value_field: str,
+    insert_sql: str,
+    json_key: str = "",
+) -> None:
+    """Синхронизирует поточечные данные через get_fitness_data."""
+    import json as _json
+
+    from mi_fitness.client.data import _build_window_timestamps
+    try:
+        start, end, _ = _build_window_timestamps(None, settings.query_duration)
+        resp = await client.get_fitness_data(relative_uid, api_key, start, end, limit=1440 * settings.query_duration)
+        for item in resp.data_items:
+            try:
+                raw = item.value
+                if isinstance(raw, str) and raw.startswith("{"):
+                    d = _json.loads(raw)
+                    val = float(d.get(json_key or value_field, 0))
+                elif isinstance(raw, dict):
+                    val = float(raw.get(json_key or value_field, 0))
+                else:
+                    val = float(raw)
+            except (TypeError, ValueError, Exception):
+                continue
+            if val == 0:
+                continue
+            cursor.execute(insert_sql, (item.time, int(val)))
+            counters[table] += cursor.rowcount > 0
+    except Exception as exc:
+        log(f"Failed to fetch '{api_key}': {exc}")
+
+
+async def _sync_calories_daily(
+    client,
+    cursor,
+    counters: dict,
+    relative_uid: int,
+    settings,
+) -> None:
+    """Синхронизирует суточные калории, valid_stand и intensity в calories_daily."""
+    import datetime as _dt
+
+    from mi_fitness.client.data import _build_window_timestamps
+
+    days = settings.query_duration
+    start, end, _ = _build_window_timestamps(None, days)
+    cal_by_date: dict[str, dict] = {}
+
+    async def _collect(api_key: str, field: str, json_key: str = "") -> None:
+        import json as _json
+        try:
+            # aggregated = 1 запись в день, limit = days
+            resp = await client.get_aggregated_data(relative_uid, api_key, start, end, limit=days)
+            for item in resp.data_items:
+                try:
+                    raw = item.value
+                    if isinstance(raw, str) and raw.startswith("{"):
+                        d = _json.loads(raw)
+                        val = float(d.get(json_key or field, 0))
+                    elif isinstance(raw, dict):
+                        val = float(raw.get(json_key or field, 0))
+                    else:
+                        val = float(raw)
+                except (TypeError, ValueError, Exception):
+                    continue
+                if val == 0:
+                    continue
+                dt = _dt.datetime.fromtimestamp(item.time)
+                date_str = dt.date().isoformat()
+                entry = cal_by_date.setdefault(date_str, {})
+                if field in ("total_cal", "active_cal"):
+                    entry[field] = entry.get(field, 0) + val
+                else:
+                    entry[field] = max(entry.get(field, 0), int(val))
+        except Exception as exc:
+            log(f"Failed to fetch '{api_key}': {exc}")
+
+    await _collect("calories", "total_cal", "calories")
+    await _collect("intensity", "intensity_minutes", "duration")
+    await _collect("valid_stand", "valid_stand_hours", "count")
+
+    now_ts = int(time.time())
+    for date_str, vals in cal_by_date.items():
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO calories_daily
+                (date, total_cal, active_cal, valid_stand_hours, intensity_minutes, last_sync)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                date_str,
+                vals.get("total_cal"),
+                vals.get("active_cal"),
+                vals.get("valid_stand_hours"),
+                vals.get("intensity_minutes"),
+                now_ts,
+            ),
+        )
+        counters["calories_daily"] += cursor.rowcount > 0
+
+
+async def _sync_weight(
+    client,
+    cursor,
+    counters: dict,
+    relative_uid: int,
+    settings,
+) -> None:
+    """Синхронизирует данные веса."""
+    try:
+        weight_list = await client.get_weight_history(
+            relative_uid, days=max(settings.query_duration, 180)
+        )
+        for item in weight_list:
+            if not item.weight or item.weight <= 0:
+                continue
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO weight (timestamp, weight_kg, bmi)
+                VALUES (?, ?, ?)
+                """,
+                (item.time, item.weight, item.bmi),
+            )
+            counters["weight"] += cursor.rowcount > 0
+    except Exception as exc:
+        log(f"Failed to fetch weight: {exc}")
+
+
+async def _sync_workouts(
+    client,
+    cursor,
+    counters: dict,
+    relative_uid: int,
+) -> None:
+    """Синхронизирует тренировки через watermark API (инкрементально)."""
+    import json as _json
+
+    # Читаем последний watermark
+    row = cursor.execute("SELECT MAX(watermark) FROM workouts").fetchone()
+    last_watermark = row[0] if row and row[0] else 0
+
+    try:
+        has_more = True
+        wm = last_watermark
+        while has_more:
+            resp = await client._request(
+                "GET",
+                "/app/v1/data/get_sport_records_by_watermark",
+                params={"relative_uid": relative_uid, "watermark": wm, "limit": 50},
+            )
+            result = resp.get("result", {})
+            records = result.get("sport_records", [])
+            has_more = result.get("has_more", False)
+
+            for rec in records:
+                wm = max(wm, int(rec.get("watermark", 0)))
+                raw_val = rec.get("value", "{}")
+                try:
+                    val = _json.loads(raw_val) if isinstance(raw_val, str) else raw_val
+                except Exception:
+                    val = {}
+                workout_id = str(rec.get("sid", rec.get("did", "")))
+                sport_type = rec.get("key") or rec.get("category", "unknown")
+                start_time = int(val.get("start_time") or rec.get("time", 0))
+                end_time = int(val.get("end_time") or (start_time + val.get("duration", 0)))
+                duration_sec = int(val.get("duration", 0))
+                calories = float(val.get("calories") or val.get("total_cal", 0))
+                avg_hr = int(val.get("avg_hrm", 0))
+                max_hr = int(val.get("max_hrm", 0))
+                min_hr = int(val.get("min_hrm", 0))
+                watermark_val = int(rec.get("watermark", 0))
+
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO workouts
+                        (workout_id, sport_type, start_time, end_time, duration_sec,
+                         calories, avg_hr, max_hr, min_hr, watermark, raw_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        workout_id, sport_type, start_time, end_time, duration_sec,
+                        calories, avg_hr, max_hr, min_hr, watermark_val,
+                        _json.dumps(val, ensure_ascii=False),
+                    ),
+                )
+                counters["workouts"] += cursor.rowcount > 0
+
+            if not records:
+                break
+    except Exception as exc:
+        log(f"Failed to fetch workouts: {exc}")
 
 
 async def daemon_main(settings: Settings | None = None) -> int:

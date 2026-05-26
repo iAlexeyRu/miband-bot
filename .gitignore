@@ -5,6 +5,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .test-tmp/
+scratch/
+plan_workouts.md
 .coverage
 htmlcov/
 .DS_Store

@@ -5,17 +5,14 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import io
 import logging
+import os
 import sqlite3
 import sys
-import time
 from datetime import date, datetime, timedelta
-from datetime import time as dt_time
 from functools import wraps
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from mi_fitness.auth import XiaomiAuth
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
@@ -30,6 +27,21 @@ from telegram.ext import (
 )
 
 from miband_tracker import storage
+from miband_tracker.bot.formatting import (
+    LOCAL_TZ,
+    RU_MONTHS,
+    day_bounds,
+    esc,
+    format_epoch,
+    format_minutes,
+    format_relative_time,
+    make_sleep_bar,
+    make_sparkline,
+    parse_day,
+    relative_day_label,
+    sleep_total,
+    workout_type_label,
+)
 from miband_tracker.config import ConfigError, Settings
 from miband_tracker.secure_files import save_auth_token
 from miband_tracker.sync import run_sync
@@ -62,9 +74,9 @@ SETTINGS = Settings.from_env()
 BOT_TOKEN = SETTINGS.telegram_bot_token
 ALLOWED_USER_ID = SETTINGS.telegram_allowed_user_id
 DB_PATH = str(SETTINGS.db_path)
-LOCAL_TZ = ZoneInfo("Europe/Moscow")
 SYNC_LOCK = asyncio.Lock()
 AUTH_LOCK = asyncio.Lock()
+AUTO_MENU_REFRESH_INTERVAL = max(5, int(os.getenv("AUTO_MENU_REFRESH_INTERVAL", "30")))
 
 STEP_GOAL = 10_000  # можно вынести в env при желании
 
@@ -123,83 +135,6 @@ def has_xiaomi_token() -> bool:
     return bool(token_path and token_path.exists())
 
 
-def esc(value: object) -> str:
-    return html.escape(str(value), quote=False)
-
-
-# ---------------------------------------------------------------------------
-# Formatters
-# ---------------------------------------------------------------------------
-def format_epoch(epoch: int | float | None, with_date: bool = True) -> str:
-    if not epoch:
-        return "н/д"
-    fmt = "%Y-%m-%d %H:%M" if with_date else "%H:%M"
-    return datetime.fromtimestamp(int(epoch), LOCAL_TZ).strftime(fmt)
-
-
-def format_relative_time(epoch: int | float | None) -> str:
-    if not epoch:
-        return "н/д"
-    diff = int(time.time() - int(epoch))
-    if diff < 60:
-        return "только что"
-    diff_min = diff // 60
-    if diff_min < 60:
-        return f"{diff_min} мин. назад"
-    diff_hours = diff_min // 60
-    if diff_hours < 24:
-        return f"{diff_hours} ч. назад"
-    diff_days = diff_hours // 24
-    if diff_days == 1:
-        return "вчера"
-    return f"{diff_days} дн. назад"
-
-
-def format_minutes(minutes: int | float | None) -> str:
-    if minutes is None:
-        return "н/д"
-    minutes = int(minutes)
-    return f"{minutes // 60} ч {minutes % 60:02d} мин"
-
-
-def step_goal_bar(steps: int | float | None, goal: int = STEP_GOAL) -> str:
-    if steps is None:
-        steps = 0
-    steps_int = int(steps)
-    percent = min(100, round(steps_int / goal * 100)) if goal > 0 else 0
-    filled = percent // 10
-    bar = "█" * filled + "░" * (10 - filled)
-    return f"<code>[{bar}]</code> {percent}%"
-
-
-def step_goal_text(steps: int | float | None, goal: int = STEP_GOAL) -> str:
-    if steps is None:
-        return f"Цель {goal:,} шагов".replace(",", " ")
-    steps_int = int(steps)
-    left = max(0, goal - steps_int)
-    if left:
-        text = f"Цель {goal:,} · осталось {left:,} шагов"
-    else:
-        text = f"Цель {goal:,} · дневная цель выполнена! 🎉"
-    return text.replace(",", " ")
-
-
-def make_sparkline(values: list[float | int]) -> str:
-    if not values:
-        return ""
-    sparks = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-    min_val = min(values)
-    max_val = max(values)
-    val_range = max_val - min_val
-    if val_range == 0:
-        return sparks[4] * min(len(values), 20)
-    sparkline = []
-    for val in values:
-        idx = int((val - min_val) / val_range * (len(sparks) - 1))
-        sparkline.append(sparks[idx])
-    return "".join(sparkline)
-
-
 def get_sleep_sparkline(table: str, field: str, start_epoch: int, end_epoch: int) -> str:
     rows = fetch_all(
         f"SELECT {field} FROM {table} WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC",
@@ -214,88 +149,69 @@ def get_sleep_sparkline(table: str, field: str, start_epoch: int, end_epoch: int
     return make_sparkline(values)
 
 
-def relative_day_label(day_str: str | None) -> str:
-    if not day_str:
-        return "Последний день"
-    try:
-        day_value = parse_day(day_str)
-    except ValueError:
-        return f"День: {day_str}"
-    today = datetime.now(LOCAL_TZ).date()
-    if day_value == today:
-        return "Сегодня"
-    if day_value == today - timedelta(days=1):
-        return "Вчера"
-    return day_str
-
-
-def day_bounds(day_value: date) -> tuple[int, int]:
-    start = datetime.combine(day_value, dt_time.min, tzinfo=LOCAL_TZ)
-    end = start + timedelta(days=1)
-    return int(start.timestamp()), int(end.timestamp())
-
-
-def parse_day(day_str: str) -> date:
-    return datetime.strptime(day_str, "%Y-%m-%d").date()
-
-
-# ---------------------------------------------------------------------------
-# Sleep quality label
-# ---------------------------------------------------------------------------
-def sleep_total(sleep: sqlite3.Row) -> int:
-    """Реальное время сна: total_duration_min если есть, иначе light+deep."""
-    total = int(sleep["total_duration_min"]) if sleep["total_duration_min"] else 0
-    if total > 0:
-        return total
-    return int(sleep["light_sleep_min"] or 0) + int(sleep["deep_sleep_min"] or 0)
-
-
-def sleep_quality_label(total_min: int, deep_min: int) -> str:
-    """Оценка качества сна по общей длительности и доле глубокого сна."""
-    if total_min >= 420 and deep_min >= 60:
-        return "🟢 Отличный"
-    if total_min >= 360 and deep_min >= 40:
-        return "🟡 Хороший"
-    if total_min >= 300:
-        return "🟠 Средний"
-    return "🔴 Недостаточный"
-
-
 # ---------------------------------------------------------------------------
 # Daily tip engine
 # ---------------------------------------------------------------------------
 def daily_tip(steps: sqlite3.Row | None, sleep: sqlite3.Row | None, hr: sqlite3.Row | None) -> str:
     """Генерирует один персональный инсайт на основе последних данных."""
     tips = []
+    is_en = os.getenv("BOT_LANG") == "en"
 
     if steps:
         s = int(steps["total_steps"] or 0)
         if s < 5000:
-            tips.append("💡 Сегодня совсем мало шагов. Прогулка в 20 минут добавит ~2 000 шагов и заметно поднимет настроение.")
+            if is_en:
+                tips.append("💡 Very few steps today. A 20-minute walk will add ~2 000 steps and boost your mood.")
+            else:
+                tips.append("💡 Сегодня совсем мало шагов. Прогулка в 20 минут добавит ~2 000 шагов и заметно поднимет настроение.")
         elif s >= STEP_GOAL:
-            tips.append("💡 Дневная норма шагов выполнена — отличный результат!")
+            if is_en:
+                tips.append("💡 Daily step goal reached — excellent job!")
+            else:
+                tips.append("💡 Дневная норма шагов выполнена — отличный результат!")
         elif s >= 7000:
-            tips.append(f"💡 До цели {STEP_GOAL:,} шагов осталось {STEP_GOAL - s:,} — почти дошли!".replace(",", " "))
+            if is_en:
+                tips.append(f"💡 {STEP_GOAL - s:,} steps left to reach your goal of {STEP_GOAL:,} — almost there!".replace(",", " "))
+            else:
+                tips.append(f"💡 До цели {STEP_GOAL:,} шагов осталось {STEP_GOAL - s:,} — почти дошли!".replace(",", " "))
 
     if sleep:
         total = sleep_total(sleep)
         deep = int(sleep["deep_sleep_min"] or 0)
         if total < 300:
-            tips.append("💡 Ночной сон меньше 5 часов — это мало. Постарайтесь лечь пораньше сегодня.")
+            if is_en:
+                tips.append("💡 Sleep was under 5 hours — that's too short. Try to go to bed earlier tonight.")
+            else:
+                tips.append("💡 Ночной сон меньше 5 часов — это мало. Постарайтесь лечь пораньше сегодня.")
         elif total < 360:
-            tips.append("💡 Ночной сон меньше 6 часов. Постарайтесь лечь пораньше сегодня.")
+            if is_en:
+                tips.append("💡 Sleep was under 6 hours. Try to go to bed earlier tonight.")
+            else:
+                tips.append("💡 Ночной сон меньше 6 часов. Постарайтесь лечь пораньше сегодня.")
         elif deep < 30:
-            tips.append("💡 Глубокого сна было совсем мало. Попробуйте проветрить комнату и ограничить экраны за час до сна.")
+            if is_en:
+                tips.append("💡 Very little deep sleep. Try airing out the room and avoiding screens for an hour before bed.")
+            else:
+                tips.append("💡 Глубокого сна было совсем мало. Попробуйте проветрить комнату и ограничить экраны за час до сна.")
 
     if hr:
         bpm = int(hr["value"])
         if bpm > 90:
-            tips.append("💡 Пульс в покое выше нормы — возможно, организм устал или есть стресс. Следите за самочувствием.")
+            if is_en:
+                tips.append("💡 Resting heart rate is elevated — the body might be tired or stressed. Keep an eye on how you feel.")
+            else:
+                tips.append("💡 Пульс в покое выше нормы — возможно, организм устал или есть стресс. Следите за самочувствием.")
         elif bpm < 50:
-            tips.append("💡 Очень низкий пульс — если это спортивная норма, всё хорошо. Если нет — стоит обратить внимание.")
+            if is_en:
+                tips.append("💡 Very low heart rate — if you are an athlete, it's fine. Otherwise, pay close attention.")
+            else:
+                tips.append("💡 Очень низкий пульс — если это спортивная норма, всё хорошо. Если нет — стоит обратить внимание.")
 
     if not tips:
-        tips.append("💡 Данных достаточно, продолжайте в том же духе!")
+        if is_en:
+            tips.append("💡 Enough data, keep up the good work!")
+        else:
+            tips.append("💡 Данных достаточно, продолжайте в том же духе!")
 
     return tips[0]  # показываем один самый актуальный совет
 
@@ -423,6 +339,54 @@ async def update_menu(
     await send_or_update_menu(context.bot, user_id, text, reply_markup, force_new)
 
 
+async def auto_refresh_main_menu_loop(app: Application) -> None:
+    """Refresh the pinned main menu after the sync daemon writes a new status file."""
+    if ALLOWED_USER_ID is None:
+        return
+
+    last_seen_mtime: float | None = None
+    while True:
+        try:
+            status_path = SETTINGS.user_status_path(ALLOWED_USER_ID)
+            if status_path.exists():
+                current_mtime = status_path.stat().st_mtime
+                if last_seen_mtime is None:
+                    last_seen_mtime = current_mtime
+                elif current_mtime > last_seen_mtime:
+                    last_seen_mtime = current_mtime
+                    if get_user_menu_msg_id(ALLOWED_USER_ID):
+                        await send_or_update_menu(
+                            app.bot,
+                            ALLOWED_USER_ID,
+                            main_menu_text(),
+                            main_keyboard(),
+                        )
+                        logger.info("Auto-refreshed main menu for user %s", ALLOWED_USER_ID)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Auto menu refresh failed: %s", exc)
+
+        await asyncio.sleep(AUTO_MENU_REFRESH_INTERVAL)
+
+
+async def start_background_tasks(app: Application) -> None:
+    app.bot_data["auto_refresh_main_menu_task"] = asyncio.create_task(
+        auto_refresh_main_menu_loop(app),
+        name="auto-refresh-main-menu",
+    )
+
+
+async def stop_background_tasks(app: Application) -> None:
+    task = app.bot_data.get("auto_refresh_main_menu_task")
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Data queries
 # ---------------------------------------------------------------------------
@@ -463,6 +427,38 @@ def latest_hr() -> sqlite3.Row | None:
 def latest_spo2() -> sqlite3.Row | None:
     return fetch_one(
         "SELECT timestamp, spo2, type FROM blood_oxygen ORDER BY timestamp DESC LIMIT 1"
+    )
+
+
+def latest_stress() -> sqlite3.Row | None:
+    return fetch_one("SELECT timestamp, value FROM stress ORDER BY timestamp DESC LIMIT 1")
+
+
+def latest_weight() -> sqlite3.Row | None:
+    return fetch_one("SELECT timestamp, weight_kg FROM weight ORDER BY timestamp DESC LIMIT 1")
+
+
+def latest_calories() -> sqlite3.Row | None:
+    return fetch_one(
+        """
+        SELECT date, total_cal, valid_stand_hours, intensity_minutes
+        FROM calories_daily
+        ORDER BY date DESC
+        LIMIT 1
+        """
+    )
+
+
+def recent_workouts(limit: int = 5) -> list[sqlite3.Row]:
+    return fetch_all(
+        """
+        SELECT workout_id, sport_type, start_time, end_time,
+               duration_sec, calories, avg_hr, max_hr, min_hr
+        FROM workouts
+        ORDER BY start_time DESC
+        LIMIT ?
+        """,
+        (limit,),
     )
 
 
@@ -530,7 +526,45 @@ def day_summary(day_str: str) -> dict:
     )
     hr = metric_stats("heart_rate", "value", start_epoch, end_epoch)
     spo2 = metric_stats("blood_oxygen", "spo2", start_epoch, end_epoch)
-    return {"date": day_str, "steps": steps, "sleep": sleep, "hr": hr, "spo2": spo2}
+    stress = metric_stats("stress", "value", start_epoch, end_epoch)
+    calories = fetch_one(
+        """
+        SELECT total_cal, active_cal, valid_stand_hours, intensity_minutes
+        FROM calories_daily
+        WHERE date = ?
+        """,
+        (day_str,),
+    )
+    weight = fetch_one(
+        """
+        SELECT weight_kg, bmi, body_fat_pct
+        FROM weight
+        WHERE timestamp <= ?
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """,
+        (end_epoch,),
+    )
+    workouts = fetch_all(
+        """
+        SELECT workout_id, sport_type, start_time, end_time, duration_sec, calories, avg_hr, max_hr, min_hr
+        FROM workouts
+        WHERE start_time >= ? AND start_time < ?
+        ORDER BY start_time ASC
+        """,
+        (start_epoch, end_epoch),
+    )
+    return {
+        "date": day_str,
+        "steps": steps,
+        "sleep": sleep,
+        "hr": hr,
+        "spo2": spo2,
+        "stress": stress,
+        "calories": calories,
+        "weight": weight,
+        "workouts": workouts,
+    }
 
 
 def available_days(limit: int = 14) -> list[str]:
@@ -583,6 +617,38 @@ def period_summary(days: int) -> dict:
     )
     hr = metric_stats("heart_rate", "value", start_epoch, end_epoch)
     spo2 = metric_stats("blood_oxygen", "spo2", start_epoch, end_epoch)
+    stress = metric_stats("stress", "value", start_epoch, end_epoch)
+
+    calories_rows = fetch_all(
+        """
+        SELECT date, total_cal, active_cal, valid_stand_hours, intensity_minutes
+        FROM calories_daily
+        WHERE date BETWEEN ? AND ?
+        ORDER BY date DESC
+        """,
+        (start_day.isoformat(), end_day.isoformat()),
+    )
+
+    weight_rows = fetch_all(
+        """
+        SELECT timestamp, weight_kg, bmi, body_fat_pct
+        FROM weight
+        WHERE timestamp >= ? AND timestamp < ?
+        ORDER BY timestamp DESC
+        """,
+        (start_epoch, end_epoch),
+    )
+    if not weight_rows:
+        latest_w = fetch_one(
+            """
+            SELECT timestamp, weight_kg, bmi, body_fat_pct
+            FROM weight
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """
+        )
+        weight_rows = [latest_w] if latest_w else []
+
     return {
         "days": days,
         "start": start_day,
@@ -591,6 +657,9 @@ def period_summary(days: int) -> dict:
         "sleep": sleep,
         "hr": hr,
         "spo2": spo2,
+        "stress": stress,
+        "calories": calories_rows,
+        "weight": weight_rows,
     }
 
 
@@ -621,57 +690,50 @@ def main_menu_text() -> str:
     sleep = latest_sleep()
     hr = latest_hr()
     spo2 = latest_spo2()
+    stress = latest_stress()
     lines = []
 
-    # Шаги
+
+
+    # 1. Шаги
     if steps:
-        label = relative_day_label(steps["date"])
         steps_count = int(steps["total_steps"])
-        lines.append(f"🚶 <b>{esc(label)}: {steps_count:,}</b> шагов".replace(",", " "))
-        lines.append(f"   {step_goal_bar(steps_count)}")
-        lines.append(f"   {step_goal_text(steps_count)}")
-        lines.append(
-            f"   {float(steps['distance_m']) / 1000:.1f} км · {float(steps['calories']):.0f} ккал"
-        )
+        dist_km = float(steps['distance_m']) / 1000.0
+        cals = float(steps['calories'])
+        lines.append(f"🚶 <b>{steps_count:,}</b> · <b>{dist_km:.1f}</b> км · <b>{cals:.0f}</b> ккал".replace(",", " "))
     else:
-        lines.append("🚶 Шаги: жду первую синхронизацию")
+        lines.append("🚶 Шаги н/д")
 
     lines.append("")
 
-    # Сон — краткая сводка на дашборде
+    # 2. Сон
     if sleep:
         total_sleep = sleep_total(sleep)
-        deep = int(sleep["deep_sleep_min"] or 0)
-        quality = sleep_quality_label(total_sleep, deep)
-        lines.append(f"😴 <b>Сон: {format_minutes(total_sleep)}</b> · {quality}")
-        lines.append(
-            f"   {esc(relative_day_label(sleep['date']))} · "
-            f"глубокий: {deep} мин · лёгкий: {sleep['light_sleep_min']} мин"
-            + (f" · REM: {sleep['rem_sleep_min']} мин" if sleep['rem_sleep_min'] else "")
-        )
+        try:
+            start_str = format_epoch(sleep["start_time"], False)
+            end_str = format_epoch(sleep["end_time"], False)
+            time_arrow = f"{start_str}→{end_str} · "
+        except Exception:
+            time_arrow = ""
+        lines.append(f"😴 {time_arrow}<b>{format_minutes(total_sleep)}</b>")
     else:
-        lines.append("😴 Сон: данных пока нет")
+        lines.append("😴 Сон н/д")
 
     lines.append("")
 
-    # Пульс
+    # 3. Пульс, Кислород, Стресс
+    metrics_parts = []
     if hr:
-        bpm = int(hr["value"])
-        lines.append(f"❤️ <b>Пульс: {bpm} bpm</b> · {format_relative_time(hr['timestamp'])}")
-    else:
-        lines.append("❤️ Пульс: данных пока нет")
-
-    # SpO2
+        metrics_parts.append(f"❤️ <b>{int(hr['value'])}</b>")
     if spo2:
-        spo2_val = float(spo2["spo2"])
-        color = "🟢" if spo2_val >= 95 else ("🟡" if spo2_val >= 90 else "🔴")
-        lines.append(f"🩸 <b>SpO2: {color} {spo2_val:.1f}%</b> · {format_relative_time(spo2['timestamp'])}")
-    else:
-        lines.append("🩸 SpO2: данных пока нет")
+        metrics_parts.append(f"🩸 <b>{float(spo2['spo2']):.0f}%</b>")
+    if stress:
+        metrics_parts.append(f"🧘 <b>{int(stress['value'])}</b>")
 
-    # Совет дня
-    tip = daily_tip(steps, sleep, hr)
-    lines.extend(["", tip])
+    if metrics_parts:
+        lines.append(" · ".join(metrics_parts))
+    else:
+        lines.append("❤️ 🩸 🧘 н/д")
 
     return "\n".join(lines)
 
@@ -686,26 +748,31 @@ def day_text(data: dict) -> str:
     spo2 = data["spo2"]
     day_str = data["date"]
 
-    day_value = parse_day(day_str)
-    start_epoch, end_epoch = day_bounds(day_value)
-
     day_label = relative_day_label(day_str)
-    lines = [f"📊 <b>{esc(day_label)} · {esc(day_str)}</b>", ""]
+
+    # Заголовок без эмодзи, затем пустая строка
+    lines = [f"Детали за {esc(day_str)} ({esc(day_label)})", ""]
 
     # Шаги
     if steps:
         steps_count = int(steps["total_steps"])
-        lines.extend(
-            [
-                "🚶 <b>Активность:</b>",
-                f"   Шаги: <b>{steps_count:,}</b>".replace(",", " "),
-                f"   {step_goal_bar(steps_count)}",
-                f"   {step_goal_text(steps_count)}",
-                f"   Дистанция: {float(steps['distance_m']) / 1000:.1f} км · {float(steps['calories']):.0f} ккал",
-            ]
-        )
+        dist_km = float(steps['distance_m']) / 1000.0
+        lines.append(f"🚶 <b>Шаги:</b> {steps_count:,} · {dist_km:.1f} км".replace(",", " "))
     else:
         lines.append("🚶 Шаги: за этот день данных нет")
+
+    # Активность и Калории
+    cals_row = data.get("calories")
+    if cals_row:
+        total_cal = float(cals_row["total_cal"] or 0)
+        active_cal = float(cals_row["active_cal"] or 0)
+        stand_hours = int(cals_row["valid_stand_hours"] or 0)
+        intensity_min = int(cals_row["intensity_minutes"] or 0)
+        lines.append(f"🧍 <b>Активность:</b> разминки: {stand_hours}ч · интенсивность: {intensity_min} мин")
+        lines.append(f"🔥 <b>Энергия:</b> всего: {total_cal:.0f} ккал (активные: {active_cal:.0f} ккал)")
+    elif steps:
+        cals = float(steps['calories'])
+        lines.append(f"🔥 <b>Энергия:</b> {cals:.0f} ккал")
 
     lines.append("")
 
@@ -713,72 +780,125 @@ def day_text(data: dict) -> str:
     if sleep:
         total_sleep = sleep_total(sleep)
         deep = int(sleep["deep_sleep_min"] or 0)
-        quality = sleep_quality_label(total_sleep, deep)
-        lines.extend(
-            [
-                f"😴 <b>Сон: {format_minutes(total_sleep)}</b> · {quality}",
-                f"   Глубокий: {format_minutes(deep)} · Лёгкий: {format_minutes(sleep['light_sleep_min'])}"
-                + (f" · REM: {format_minutes(sleep['rem_sleep_min'])}" if sleep['rem_sleep_min'] else ""),
-                f"   Окно: {format_epoch(sleep['start_time'], False)} — {format_epoch(sleep['end_time'], False)}",
-            ]
-        )
-        # Пульс покоя
-        rest_hr = resting_hr(int(sleep["start_time"]), int(sleep["end_time"]))
-        if rest_hr:
-            lines.append(f"   Пульс покоя во сне: <b>{rest_hr} bpm</b>")
+        light = int(sleep["light_sleep_min"] or 0)
+        score = int(sleep["sleep_score"] or 0)
+        score_part = f" · {score}/100" if score else ""
 
-        # Sparklines ЧСС и SpO2
-        sleep_hr_spark = get_sleep_sparkline(
-            "heart_rate", "value", int(sleep["start_time"]), int(sleep["end_time"])
-        )
-        sleep_spo2_spark = get_sleep_sparkline(
-            "blood_oxygen", "spo2", int(sleep["start_time"]), int(sleep["end_time"])
-        )
-        if sleep_hr_spark:
-            lines.append(f"   📈 ЧСС: <code>[{sleep_hr_spark}]</code>")
-        if sleep_spo2_spark:
-            lines.append(f"   📉 SpO2: <code>[{sleep_spo2_spark}]</code>")
+        try:
+            start_str = format_epoch(sleep["start_time"], False)
+            end_str = format_epoch(sleep["end_time"], False)
+            time_arrow = f" · {start_str}→{end_str}"
+        except Exception:
+            time_arrow = ""
+
+        lines.append(f"😴 <b>Сон:</b> {format_minutes(total_sleep)} (глубокий: {format_minutes(deep)} · легкий: {format_minutes(light)}){score_part}{time_arrow}")
     else:
         lines.append("😴 Сон: за этот день данных нет")
 
     lines.append("")
-    lines.append("❤️ <b>За сутки:</b>")
+
+    # Показатели (Пульс, SpO2, Стресс, Вес)
+    metrics_parts = []
     if hr and hr["count"]:
-        lines.append(
-            f"   Пульс: ср. {hr['avg_value']} · диапазон {hr['min_value']}–{hr['max_value']} bpm"
-        )
+        avg_hr = int(hr["avg_value"])
+        min_hr = int(hr["min_value"])
+        max_hr = int(hr["max_value"])
+        rest_hr_part = ""
+        if sleep:
+            rest_hr = resting_hr(int(sleep["start_time"]), int(sleep["end_time"]))
+            if rest_hr:
+                rest_hr_part = f" · во сне: {rest_hr} bpm"
+        metrics_parts.append(f"❤️ <b>Пульс:</b> ср. {avg_hr} ({min_hr}–{max_hr}) bpm{rest_hr_part}")
     else:
-        lines.append("   Пульс: точек нет")
+        metrics_parts.append("❤️ Пульс: за этот день данных нет")
 
+    # SpO2
     if spo2 and spo2["count"]:
-        lines.append(
-            f"   SpO2: ср. {spo2['avg_value']}% · диапазон {spo2['min_value']}–{spo2['max_value']}%"
-        )
+        avg_spo2 = float(spo2["avg_value"])
+        min_spo2 = float(spo2["min_value"])
+        max_spo2 = float(spo2["max_value"])
+        metrics_parts.append(f"🩸 <b>Кислород:</b> ср. {avg_spo2:.0f}% ({min_spo2:.0f}–{max_spo2:.0f}%) SpO2")
     else:
-        lines.append("   SpO2: точек нет")
+        metrics_parts.append("🩸 Кислород: за этот день данных нет")
 
-    lines.extend(
-        ["", "<i>Статистика с датчиков браслета. Не является медицинским заключением.</i>"]
-    )
+    # Стресс
+    stress = data.get("stress")
+    if stress and stress["count"]:
+        avg_str = int(stress["avg_value"])
+        min_str = int(stress["min_value"])
+        max_str = int(stress["max_value"])
+        metrics_parts.append(f"🧘 <b>Стресс:</b> ср. {avg_str} ({min_str}–{max_str})")
+    else:
+        metrics_parts.append("🧘 Стресс: за этот день данных нет")
+
+    # Вес
+    weight = data.get("weight")
+    if weight:
+        w_kg = float(weight["weight_kg"] or 0)
+        bmi_part = ""
+        fat_part = ""
+        if weight["bmi"]:
+            bmi_part = f" · BMI: {float(weight['bmi']):.1f}"
+        if weight["body_fat_pct"]:
+            fat_part = f" · жир: {float(weight['body_fat_pct']):.1f}%"
+        metrics_parts.append(f"⚖️ <b>Вес:</b> {w_kg:.1f} кг{bmi_part}{fat_part}")
+
+    lines.append("\n\n".join(metrics_parts))
+
+    # Тренировки
+    workouts = data.get("workouts")
+    if workouts:
+        lines.append("")
+        lines.append("🏋️ <b>Тренировки:</b>")
+        for w in workouts:
+            sport = workout_type_label(w["sport_type"])
+            dur_min = int(w["duration_sec"] or 0) // 60
+            dur_sec = int(w["duration_sec"] or 0) % 60
+            dur_str = f"{dur_min}:{dur_sec:02d}"
+            cal = float(w["calories"] or 0)
+            avg_hr = int(w["avg_hr"] or 0)
+            max_hr = int(w["max_hr"] or 0)
+
+            hr_part = ""
+            if avg_hr:
+                hr_part = f" · ❤️ ср. {avg_hr}"
+                if max_hr and max_hr != avg_hr:
+                    hr_part += f" (макс {max_hr})"
+                hr_part += " bpm"
+
+            try:
+                start_dt = datetime.fromtimestamp(w["start_time"], LOCAL_TZ)
+                time_str = f" в {start_dt.hour:02d}:{start_dt.minute:02d}"
+            except Exception:
+                time_str = ""
+
+            lines.append(f"• <b>{esc(sport)}</b>{time_str} ({dur_str} · 🔥 {cal:.0f} ккал{hr_part})")
+
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
 # History / Calendar
 # ---------------------------------------------------------------------------
+def day_btn_label(date_str: str) -> str:
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+        month_name = RU_MONTHS[dt.month - 1]
+        return f"{dt.day} {month_name}"
+    except Exception:
+        return date_str
+
 def history_text(days: int = 7) -> str:
     summary = period_summary(days)
     rows = summary["steps"]
     sleep_by_day = {row["date"]: row for row in summary["sleep"]}
-    # Все уникальные дни из обоих источников
     all_days = sorted(
         set([r["date"] for r in rows] + list(sleep_by_day.keys())),
         reverse=True,
     )[:days]
 
     lines = [
-        f"📅 <b>Календарь · последние {days} дней</b>",
-        f"{summary['start'].isoformat()} — {summary['end'].isoformat()}",
+        f"📅 <b>Последние {days} дней</b>",
         "",
     ]
 
@@ -791,15 +911,21 @@ def history_text(days: int = 7) -> str:
         sleep_row = sleep_by_day.get(d)
         icon = day_emoji(steps_row, sleep_row)
 
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d").date()
+            date_formatted = f"{dt.day:02d}.{dt.month:02d}"
+        except Exception:
+            date_formatted = d
+
         steps_text = f"{int(steps_row['total_steps']):,} шагов".replace(",", " ") if steps_row else "шаги н/д"
         sleep_text = "сон н/д"
         if sleep_row:
             total = sleep_total(sleep_row)
             sleep_text = format_minutes(total)
-        lines.append(f"{icon} <b>{d}</b>: {steps_text} · {sleep_text}")
+        lines.append(f"{icon} <b>{date_formatted}</b>   {steps_text} · {sleep_text}")
 
     lines.append("")
-    lines.append("<i>Нажми на кнопку дня ниже, чтобы открыть детальный разрез.</i>")
+    lines.append("Нажми на день ниже для деталей")
     return "\n".join(lines)
 
 
@@ -818,7 +944,7 @@ def history_keyboard(days: int = 7) -> InlineKeyboardMarkup:
     buttons: list[list[InlineKeyboardButton]] = [period_row]
 
     day_buttons = [
-        InlineKeyboardButton(day, callback_data=f"day:{day}")
+        InlineKeyboardButton(day_btn_label(day), callback_data=f"day:{day}")
         for day in available_days(days)
     ]
     for idx in range(0, len(day_buttons), 3):
@@ -860,65 +986,55 @@ def latest_sleep_text() -> str:
     total_sleep = sleep_total(sleep)
     deep = int(sleep["deep_sleep_min"] or 0)
     rem = int(sleep["rem_sleep_min"] or 0)
-    awake = int(sleep["awake_min"] or 0)
     score = int(sleep["sleep_score"] or 0)
-    quality = sleep_quality_label(total_sleep, deep)
 
-    lines = [
-        f"😴 <b>Ночной сон · {esc(relative_day_label(sleep['date']))}</b>",
-        f"Дата: {esc(sleep['date'])}",
-        "",
-        f"⏳ <b>Длительность: {format_minutes(total_sleep)}</b> · {quality}"
-        + (f" · Счёт: {score}/100" if score else ""),
-        f"   • Глубокий: {format_minutes(deep)}",
-        f"   • Лёгкий:   {format_minutes(sleep['light_sleep_min'])}",
-    ]
-    if rem:
-        lines.append(f"   • REM:       {format_minutes(rem)}")
-    if awake:
-        lines.append(f"   • Пробуждений: {awake} мин")
-    lines.append(f"   • Постель:  {format_epoch(sleep['start_time'], False)} — {format_epoch(sleep['end_time'], False)}")
+    import datetime as _dt
+    try:
+        sleep_date = _dt.datetime.strptime(sleep["date"], "%Y-%m-%d").date()
+        date_formatted = f"{sleep_date.day} {RU_MONTHS[sleep_date.month - 1]}"
+    except Exception:
+        date_formatted = sleep["date"]
 
-    # Пульс покоя
+    start_str = format_epoch(sleep["start_time"], False)
+    end_str = format_epoch(sleep["end_time"], False)
+
+    rest_hr_str = "н/д"
     if sleep["start_time"] and sleep["end_time"]:
         rest_hr = resting_hr(int(sleep["start_time"]), int(sleep["end_time"]))
         if rest_hr:
-            lines.append(f"   • Пульс покоя: <b>{rest_hr} bpm</b>")
+            rest_hr_str = f"{rest_hr} bpm"
+
+    deep_bar = make_sleep_bar(deep, total_sleep)
+    light = int(sleep["light_sleep_min"] or 0)
+    light_bar = make_sleep_bar(light, total_sleep)
+    rem_bar = make_sleep_bar(rem, total_sleep)
+
+    lines = [
+        f"😴 <b>Ночной сон · {date_formatted}</b>",
+        "",
+        f"Длительность    <b>{format_minutes(total_sleep)}</b>",
+        f"Качество        <b>{score} / 100</b>" if score else "Качество        <b>н/д</b>",
+        f"Постель         <b>{start_str} — {end_str}</b>",
+        f"Пульс покоя     <b>{rest_hr_str}</b>",
+        "",
+        f"Глубокий  <code>{deep_bar}</code>  {format_minutes(deep)}",
+        f"Лёгкий    <code>{light_bar}</code>  {format_minutes(light)}",
+    ]
+    if rem:
+        lines.append(f"REM       <code>{rem_bar}</code>  {format_minutes(rem)}")
 
     lines.append("")
 
-    # Sparklines
-    if sleep["start_time"] and sleep["end_time"]:
-        sleep_hr_spark = get_sleep_sparkline(
-            "heart_rate", "value", int(sleep["start_time"]), int(sleep["end_time"])
-        )
-        sleep_spo2_spark = get_sleep_sparkline(
-            "blood_oxygen", "spo2", int(sleep["start_time"]), int(sleep["end_time"])
-        )
+    hr_str = "н/д"
+    if hr and hr["count"]:
+        hr_str = f"ср. {int(hr['avg_value'])} · диапазон {int(hr['min_value'])}–{int(hr['max_value'])}"
+    lines.append(f"ЧСС во сне   {hr_str}")
 
-        if sleep_hr_spark:
-            lines.append("📈 <b>ЧСС во сне:</b>")
-            lines.append(f"   <code>[{sleep_hr_spark}]</code>")
-            if hr and hr["count"]:
-                lines.append(
-                    f"   Ср. {hr['avg_value']} bpm · диапазон {hr['min_value']}–{hr['max_value']} bpm"
-                )
-            lines.append("")
-        else:
-            lines.append("📈 ЧСС: детальных точек нет\n")
+    spo2_str = "н/д"
+    if spo2 and spo2["count"]:
+        spo2_str = f"ср. {int(spo2['avg_value'])}% · мин. {int(spo2['min_value'])}%"
+    lines.append(f"SpO2 во сне  {spo2_str}")
 
-        if sleep_spo2_spark:
-            lines.append("📉 <b>SpO2 во сне:</b>")
-            lines.append(f"   <code>[{sleep_spo2_spark}]</code>")
-            if spo2 and spo2["count"]:
-                lines.append(
-                    f"   Ср. {spo2['avg_value']}% · мин. {spo2['min_value']}%"
-                )
-            lines.append("")
-        else:
-            lines.append("📉 SpO2: детальных точек нет\n")
-
-    lines.append("<i>Детали подтягиваются автоматически при фоновой синхронизации с FDS.</i>")
     return "\n".join(lines)
 
 
@@ -932,9 +1048,7 @@ def period_text(days: int) -> str:
 
     total_steps = sum(int(row["total_steps"] or 0) for row in steps)
     avg_steps = round(total_steps / len(steps)) if steps else 0
-    total_distance = sum(float(row["distance_m"] or 0) for row in steps) / 1000
     best_steps = max(steps, key=lambda r: int(r["total_steps"] or 0), default=None)
-    worst_steps = min(steps, key=lambda r: int(r["total_steps"] or 0), default=None)
 
     sleep_totals = [
         sleep_total(row) for row in sleep_rows
@@ -945,50 +1059,105 @@ def period_text(days: int) -> str:
 
     hr = summary["hr"]
     spo2 = summary["spo2"]
+    stress = summary["stress"]
+    cals_rows = summary["calories"]
+    weight_rows = summary["weight"]
 
+    start_date = summary["start"]
+    end_date = summary["end"]
+    if start_date.month == end_date.month:
+        month_name = RU_MONTHS[start_date.month - 1]
+        date_range = f"{start_date.day}–{end_date.day} {month_name}"
+    else:
+        start_month = RU_MONTHS[start_date.month - 1]
+        end_month = RU_MONTHS[end_date.month - 1]
+        date_range = f"{start_date.day} {start_month} — {end_date.day} {end_month}"
+
+    avg_total_cal = None
+    avg_active_cal = None
+    avg_stand_hours = None
+    avg_intensity_min = None
+
+    if cals_rows:
+        valid_cals = [float(r["total_cal"]) for r in cals_rows if r["total_cal"] is not None]
+        valid_active = [float(r["active_cal"]) for r in cals_rows if r["active_cal"] is not None]
+        valid_stand = [int(r["valid_stand_hours"]) for r in cals_rows if r["valid_stand_hours"] is not None]
+        valid_intensity = [int(r["intensity_minutes"]) for r in cals_rows if r["intensity_minutes"] is not None]
+
+        if valid_cals:
+            avg_total_cal = round(sum(valid_cals) / len(valid_cals))
+        if valid_active:
+            avg_active_cal = round(sum(valid_active) / len(valid_active))
+        if valid_stand:
+            avg_stand_hours = round(sum(valid_stand) / len(valid_stand))
+        if valid_intensity:
+            avg_intensity_min = round(sum(valid_intensity) / len(valid_intensity))
+
+    stress_str = "н/д"
+    if stress and stress["count"]:
+        stress_str = f"ср. {int(stress['avg_value'])} · диапазон {int(stress['min_value'])}–{int(stress['max_value'])}"
+
+    weight_str = None
+    if weight_rows:
+        latest_weight = weight_rows[0]
+        w_kg = float(latest_weight["weight_kg"] or 0)
+        bmi_val = latest_weight["bmi"]
+        fat_val = latest_weight["body_fat_pct"]
+
+        weight_str = f"{w_kg:.1f} кг"
+        if bmi_val:
+            weight_str += f" (BMI: {float(bmi_val):.1f}"
+            if fat_val:
+                weight_str += f" · жир: {float(fat_val):.1f}%"
+            weight_str += ")"
+
+    period_label = "Все время" if days >= 3650 else f"{days} дней"
     lines = [
-        f"📊 <b>Аналитика · {days} дней</b>",
-        f"{summary['start'].isoformat()} — {summary['end'].isoformat()}",
+        f"📊 <b>Тренды · {period_label} · {date_range}</b>",
         "",
-        "🚶 <b>Активность:</b>",
-        f"   Всего шагов: {total_steps:,}".replace(",", " "),
-        f"   В среднем: {avg_steps:,} / день".replace(",", " "),
-        f"   Дистанция: {total_distance:.1f} км",
-        f"   Норма {STEP_GOAL:,} выполнена: {goal_days} из {len(steps)} дней".replace(",", " "),
+        f"🚶 <b>Шаги всего</b>       {total_steps:,}".replace(",", " "),
+        f"   В среднем / день  {avg_steps:,}".replace(",", " "),
+        f"   Норма {STEP_GOAL // 1000}k         {goal_days} из {len(steps)} дней",
     ]
     if best_steps:
-        lines.append(
-            f"   🏆 Лучший день: {best_steps['date']} · {int(best_steps['total_steps']):,} шагов".replace(",", " ")
-        )
-    if worst_steps and len(steps) > 1:
-        lines.append(
-            f"   📉 Слабейший: {worst_steps['date']} · {int(worst_steps['total_steps']):,} шагов".replace(",", " ")
-        )
+        try:
+            best_dt = datetime.strptime(best_steps["date"], "%Y-%m-%d").date()
+            best_date_str = f"{best_dt.day:02d}.{best_dt.month:02d}"
+        except Exception:
+            best_date_str = best_steps["date"]
+        lines.append(f"   🏆 Лучший день    {best_date_str} · {int(best_steps['total_steps']):,}".replace(",", " "))
 
     lines.append("")
-    lines.append("😴 <b>Сон:</b>")
-    if avg_sleep is not None:
-        lines.append(f"   Среднее: {format_minutes(avg_sleep)}")
-    else:
-        lines.append("   Среднее: н/д")
-    if best_sleep is not None:
-        lines.append(f"   Лучшая ночь: {format_minutes(best_sleep)}")
+
+    if avg_total_cal is not None:
+        lines.append("🧍 <b>Активность ср.</b>")
+        lines.append(f"   Расход энергии    {avg_total_cal} ккал (активные: {avg_active_cal} ккал)")
+        stand_part = f"{avg_stand_hours}ч" if avg_stand_hours is not None else "н/д"
+        intens_part = f"{avg_intensity_min} мин" if avg_intensity_min is not None else "н/д"
+        lines.append(f"   Часы разминок     {stand_part} · интенсивность: {intens_part}")
+        lines.append("")
+
+    lines.append("😴 <b>Сон среднее</b>      " + (format_minutes(avg_sleep) if avg_sleep else "н/д"))
+    if best_sleep:
+        lines.append(f"   Лучшая ночь      {format_minutes(best_sleep)}")
 
     lines.append("")
-    lines.append("❤️ <b>ЧСС и SpO2:</b>")
+    hr_str = "н/д"
     if hr and hr["count"]:
-        lines.append(
-            f"   Пульс: ср. {hr['avg_value']} bpm · диапазон {hr['min_value']}–{hr['max_value']} bpm"
-        )
-    else:
-        lines.append("   Пульс: данных нет")
+        hr_str = f"{int(hr['avg_value'])} bpm · {int(hr['min_value'])}–{int(hr['max_value'])}"
+    lines.append(f"❤️ <b>Пульс ср.</b>        {hr_str}")
 
+    spo2_str = "н/д"
     if spo2 and spo2["count"]:
-        lines.append(
-            f"   SpO2: ср. {spo2['avg_value']}% · мин. {spo2['min_value']}%"
-        )
-    else:
-        lines.append("   SpO2: данных нет")
+        spo2_str = f"{float(spo2['avg_value']):.1f}% · мин. {int(spo2['min_value'])}%"
+    lines.append(f"🩸 <b>SpO2 ср.</b>          {spo2_str}")
+
+    # Стресс
+    lines.append(f"🧘 <b>Стресс ср.</b>        {stress_str}")
+
+    # Вес
+    if weight_str:
+        lines.append(f"⚖️ <b>Вес (последний)</b>  {weight_str}")
 
     lines.extend(["", "<i>Берегите здоровье!</i>"])
     return "\n".join(lines)
@@ -1007,28 +1176,103 @@ def trends_keyboard(days: int) -> InlineKeyboardMarkup:
                     callback_data="period:30d",
                 ),
             ],
+            [
+                InlineKeyboardButton("· Все время ·" if days >= 3650 else "Все время", callback_data="period:all"),
+                InlineKeyboardButton("🏋️ Тренировки", callback_data="menu:workouts"),
+            ],
             [InlineKeyboardButton("⬅️ Главная", callback_data="menu:main")],
         ]
     )
 
 
 # ---------------------------------------------------------------------------
+# Workouts screen
+# ---------------------------------------------------------------------------
+def workouts_text(limit: int = 10) -> str:
+    workouts = recent_workouts(limit)
+    lines = ["🏋️ <b>Тренировки</b>", ""]
+    if not workouts:
+        lines.append("Пока нет записей. Синхронизация загрузит тренировки автоматически.")
+        return "\n".join(lines)
+
+    for w in workouts:
+        sport = workout_type_label(w["sport_type"])
+        start = format_epoch(w["start_time"])
+        dur_min = int(w["duration_sec"] or 0) // 60
+        dur_sec = int(w["duration_sec"] or 0) % 60
+        dur_str = f"{dur_min}:{dur_sec:02d}"
+        cal = float(w["calories"] or 0)
+        avg_hr = int(w["avg_hr"] or 0)
+        max_hr = int(w["max_hr"] or 0)
+
+        lines.append(f"🏋️ <b>{esc(sport)}</b>")
+        lines.append(f"   🗓 {esc(start)}")
+        lines.append(f"   ⏱ {dur_str} · 🔥 {cal:.0f} ккал")
+        if avg_hr:
+            lines.append(f"   ❤️ ср. {avg_hr} bpm", )
+        if max_hr and max_hr != avg_hr:
+            lines[-1] = lines[-1] + f" · макс {max_hr} bpm"
+        lines.append("")
+
+    lines.append("<i>Последние тренировки из Xiaomi Health.</i>")
+    return "\n".join(lines)
+
+
+def workouts_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⬅️ Тренды", callback_data="menu:trends")]]
+    )
+
+
+
+
+# ---------------------------------------------------------------------------
 # Service menu
 # ---------------------------------------------------------------------------
+def db_total_records() -> int:
+    if not health_db_exists():
+        return 0
+    conn = health_conn()
+    tables = ["steps_daily", "sleep_daily", "sleep_stages", "heart_rate", "blood_oxygen", "stress", "calories_daily", "weight", "workouts"]
+    total = 0
+    try:
+        for table in tables:
+            exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            if exists:
+                total += conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return total
+
 def more_text() -> str:
+    status = read_status_file()
+    last_sync_epoch = status.get("last_sync")
+    last_sync_str = format_relative_time(last_sync_epoch) if last_sync_epoch else "н/д"
+
+    interval_min = int(SETTINGS.sync_interval) // 60
+    db_records = db_total_records()
+
     return (
         "⚙️ <b>Сервис</b>\n\n"
-        "Технические функции: принудительная синхронизация, статус базы данных и выгрузка CSV."
+        f"Устройство       <b>Mi Band</b>\n"
+        f"Последний синк   <b>{last_sync_str}</b>\n"
+        f"Интервал         <b>{interval_min} мин</b>\n"
+        f"Записей в БД     <b>{db_records:,}</b>".replace(",", " ")
     )
 
 
 def more_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("🔄 Принудительный синк", callback_data="menu:sync")],
+            [InlineKeyboardButton("🔄 Синхронизировать", callback_data="menu:sync")],
             [
                 InlineKeyboardButton("💾 Экспорт ZIP", callback_data="menu:export"),
-                InlineKeyboardButton("🧰 Статус БД", callback_data="menu:db_status"),
+                InlineKeyboardButton("📊 Статус БД", callback_data="menu:db_status"),
             ],
             [InlineKeyboardButton("⬅️ Главная", callback_data="menu:main")],
         ]
@@ -1043,7 +1287,8 @@ def db_status_text() -> str:
 
     conn = health_conn()
     try:
-        tables = ["steps_daily", "sleep_daily", "sleep_stages", "heart_rate", "blood_oxygen"]
+        tables = ["steps_daily", "sleep_daily", "sleep_stages", "heart_rate", "blood_oxygen",
+                  "stress", "calories_daily", "weight", "workouts"]
         for table in tables:
             exists = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -1215,15 +1460,29 @@ async def run_initial_sync_after_login(update: Update, context: ContextTypes.DEF
 # Menu keyboards
 # ---------------------------------------------------------------------------
 def main_keyboard() -> InlineKeyboardMarkup:
+    is_en = os.getenv("BOT_LANG") == "en"
+    if is_en:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("😴 Sleep", callback_data="menu:sleep"),
+                    InlineKeyboardButton("📊 Weekly", callback_data="menu:trends"),
+                ],
+                [
+                    InlineKeyboardButton("📅 History", callback_data="menu:history"),
+                    InlineKeyboardButton("⚙️ Settings", callback_data="menu:more"),
+                ],
+            ]
+        )
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📅 Календарь", callback_data="menu:history"),
-                InlineKeyboardButton("📊 Аналитика", callback_data="menu:trends"),
+                InlineKeyboardButton("😴 Сон", callback_data="menu:sleep"),
+                InlineKeyboardButton("📊 За неделю", callback_data="menu:trends"),
             ],
             [
-                InlineKeyboardButton("😴 Детали сна", callback_data="menu:sleep"),
-                InlineKeyboardButton("⚙️ Сервис", callback_data="menu:more"),
+                InlineKeyboardButton("📅 История", callback_data="menu:history"),
+                InlineKeyboardButton("⚙️ Настройки", callback_data="menu:more"),
             ],
         ]
     )
@@ -1409,11 +1668,22 @@ async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed(update):
         return
+    text = update.message.text if update.message else ""
     await safe_delete(update.message)
     if not has_xiaomi_token():
         await show_onboarding(update, context)
         return
-    await show_main_menu(update, context)
+
+    if "Сон" in text or "Sleep" in text:
+        await update_menu(update, context, latest_sleep_text(), back_keyboard())
+    elif "За неделю" in text or "Weekly" in text:
+        await update_menu(update, context, period_text(7), trends_keyboard(7))
+    elif "История" in text or "History" in text:
+        await show_history(update, context, 7)
+    elif "Настройки" in text or "Settings" in text:
+        await update_menu(update, context, more_text(), more_keyboard())
+    else:
+        await show_main_menu(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -1451,19 +1721,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             update,
             context,
             latest_sleep_text(),
-            InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton("📅 Календарь", callback_data="menu:history")],
-                    [InlineKeyboardButton("⬅️ Главная", callback_data="menu:main")],
-                ]
-            ),
+            back_keyboard(),
         )
 
     elif data == "menu:trends":
-        await update_menu(update, context, period_text(30), trends_keyboard(30))
+        await update_menu(update, context, period_text(7), trends_keyboard(7))
 
     elif data.startswith("period:"):
-        days = 7 if data == "period:7d" else 30
+        days = 3650 if data == "period:all" else 7 if data == "period:7d" else 30
         await update_menu(update, context, period_text(days), trends_keyboard(days))
 
     elif data.startswith("day:"):
@@ -1477,6 +1742,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"📊 <b>День</b>\n\nНе удалось открыть: {esc(e)}",
                 back_keyboard("menu:history"),
             )
+
+    elif data == "menu:workouts":
+        await update_menu(update, context, workouts_text(), workouts_keyboard())
 
     elif data == "menu:more":
         await update_menu(update, context, more_text(), more_keyboard())
@@ -1509,13 +1777,21 @@ def main() -> None:
     if ALLOWED_USER_ID is not None:
         DB_PATH = str(SETTINGS.user_db_path(ALLOWED_USER_ID))
         print(f"Запуск бота для пользователя ID {ALLOWED_USER_ID}...")
+        storage.init_health_db(Path(DB_PATH))
     else:
         DB_PATH = str(SETTINGS.db_path)
         print("Бот запущен. Отправьте /start в Telegram чтобы привязать аккаунт.")
+        storage.init_health_db(Path(DB_PATH))
 
 
     init_state_db()
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(start_background_tasks)
+        .post_shutdown(stop_background_tasks)
+        .build()
+    )
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("sync", cmd_sync))

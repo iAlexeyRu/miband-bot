@@ -4,8 +4,9 @@
 
 A personal self-hosted Telegram bot for your Xiaomi Fitness / Mi Band data.
 
-Fetches steps, sleep, heart rate, and SpO2 from the Xiaomi Fitness cloud,
-stores them in a local SQLite database, and provides access to them directly from Telegram —
+Fetches steps, sleep, heart rate, SpO2, stress, daily activity, weight,
+and workouts from the Xiaomi Fitness cloud, stores them in a local SQLite database,
+and provides access to them directly from Telegram —
 without third-party services and without sharing your data with anyone.
 
 > **This project is designed for a single owner.**
@@ -13,8 +14,9 @@ without third-party services and without sharing your data with anyone.
 
 ## Features
 
-- View recent steps, sleep, heart rate, and SpO2 in Telegram.
+- View recent steps, sleep, heart rate, SpO2, stress, weight, and workouts in Telegram.
 - Manual and scheduled automatic synchronization.
+- Auto-refresh of the pinned main menu message after background synchronization.
 - History storage in SQLite (`data/`).
 - Export of all tables to a ZIP archive with CSV files directly into the chat.
 - Deployment via Docker Compose.
@@ -37,7 +39,7 @@ is prevented by a file-based lock.
 
 ## Requirements
 
-- Docker and Docker Compose (or installed Python 3.10+).
+- Docker and Docker Compose (or installed Python 3.11+).
 - Telegram bot token from [@BotFather](https://t.me/BotFather).
 - A Xiaomi account with Xiaomi Fitness data.
 
@@ -76,7 +78,7 @@ If you have already cloned the repository via `git clone` or downloaded the ZIP 
   ```
 
 The script will automatically check your environment, guide you step-by-step to get your Telegram bot token, create the `secrets.env` configuration, set up the Python virtual environment (if you choose to run without Docker), and let you launch the bot with a single key press!
-After setup, you can start the bot again with `run_local.bat` from the `miband-bot` folder.
+After setup, you can start the bot again with `run_local.sh` on macOS/Linux or `run_local.bat` on Windows from the `miband-bot` folder.
 
 ---
 

@@ -28,9 +28,13 @@ goto SETUP_ENV
 
 :MODE_PYTHON
 python --version >nul 2>nul
-if not errorlevel 1 goto PYTHON_OK
+if not errorlevel 1 (
+    python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+    if not errorlevel 1 goto PYTHON_OK
+    echo   ! Найден Python, но нужна версия 3.11 или новее.
+)
 
-echo   ! Python не найден: https://www.python.org/downloads/
+echo   ! Python 3.11+ не найден: https://www.python.org/downloads/
 echo.
 set install_python=y
 set /p install_python="  Установить Python 3.11 автоматически? [Y/n]: "
@@ -111,16 +115,21 @@ goto END_LAUNCH
 echo   Подготовка...
 if not exist .venv ( python -m venv .venv >nul 2>nul )
 call .venv\Scripts\activate
-pip install -r requirements.txt -e mi-fitness-python > pip_install.log 2>&1
-if not errorlevel 1 (
-    del pip_install.log >nul 2>nul
-    echo   OK Готово
-) else (
-    echo   ! Ошибка установки зависимостей:
-    type pip_install.log
-    del pip_install.log >nul 2>nul
-    pause & exit /b 1
-)
+python -m pip install --upgrade pip setuptools wheel > pip_install.log 2>&1
+if errorlevel 1 goto PIP_INSTALL_FAILED
+python -m pip install -r requirements.txt -e mi-fitness-python >> pip_install.log 2>&1
+if errorlevel 1 goto PIP_INSTALL_FAILED
+goto PIP_INSTALL_OK
+
+:PIP_INSTALL_FAILED
+echo   ! Ошибка установки зависимостей:
+type pip_install.log
+del pip_install.log >nul 2>nul
+pause & exit /b 1
+
+:PIP_INSTALL_OK
+del pip_install.log >nul 2>nul
+echo   OK Готово
 
 >run_local.bat echo @echo off
 >>run_local.bat echo chcp 65001 ^> nul

@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from .config import Settings
 
 LOCAL_TZ = ZoneInfo("Europe/Moscow")
-EXPORT_TABLES = ["steps_daily", "sleep_daily", "sleep_stages", "heart_rate", "blood_oxygen", "stress"]
+EXPORT_TABLES = ["steps_daily", "sleep_daily", "sleep_stages", "heart_rate", "blood_oxygen", "stress", "calories_daily", "weight", "workouts"]
 
 
 @contextmanager
@@ -110,6 +110,45 @@ def init_health_db(db_path: Path) -> None:
                 timestamp INTEGER PRIMARY KEY,
                 spo2 REAL,
                 type TEXT
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS calories_daily (
+                date TEXT PRIMARY KEY,
+                total_cal REAL,
+                active_cal REAL,
+                valid_stand_hours INTEGER,
+                intensity_minutes INTEGER,
+                last_sync INTEGER
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS weight (
+                timestamp INTEGER PRIMARY KEY,
+                weight_kg REAL,
+                bmi REAL,
+                body_fat_pct REAL
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workouts (
+                workout_id TEXT PRIMARY KEY,
+                sport_type TEXT,
+                start_time INTEGER,
+                end_time INTEGER,
+                duration_sec INTEGER,
+                calories REAL,
+                avg_hr INTEGER,
+                max_hr INTEGER,
+                min_hr INTEGER,
+                watermark INTEGER,
+                raw_json TEXT
             )
             """
         )

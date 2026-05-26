@@ -43,14 +43,16 @@ if [ "$install_mode" = "2" ]; then
     DOCKER_MODE=true
 else
     PYTHON_CMD=""
-    for cmd in python3 python; do
+    for cmd in python3.13 python3.12 python3.11 python3 python; do
         if command -v "$cmd" &> /dev/null; then
-            ver=$("$cmd" -c 'import sys; print(sys.version_info[0])' 2>/dev/null)
-            [ "$ver" = "3" ] && PYTHON_CMD="$cmd" && break
+            if "$cmd" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+                PYTHON_CMD="$cmd"
+                break
+            fi
         fi
     done
     if [ -z "$PYTHON_CMD" ]; then
-        err "Python 3 не найден. Установите: https://www.python.org/downloads/"
+        err "Python 3.11+ не найден. Установите: https://www.python.org/downloads/"
         exit 1
     fi
     ok "Python готов ($PYTHON_CMD)"
@@ -119,7 +121,8 @@ if [ ! -d ".venv" ]; then
 fi
 
 source .venv/bin/activate
-if pip install -r requirements.txt -e mi-fitness-python > pip_install.log 2>&1; then
+if python -m pip install --upgrade pip setuptools wheel > pip_install.log 2>&1 \
+    && python -m pip install -r requirements.txt -e mi-fitness-python >> pip_install.log 2>&1; then
     rm -f pip_install.log
     ok "Готово"
 else
